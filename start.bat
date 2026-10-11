@@ -1,6 +1,6 @@
 @echo off
 rem Ponko-HUD ¡¤ (c) 2026 visitor257 ¡¤ MIT License ¡¤ github.com/visitor257/Ponko-HUD
-rem Ponko HUD fallback launcher: Edge --app with an ISOLATED profile.
+rem Ponko-HUD fallback launcher: Edge --app with an ISOLATED profile.
 rem Prefer start-native.bat (real window, own taskbar icon). This one only needs Edge.
 setlocal
 set "ROOT=%~dp0"
@@ -9,7 +9,7 @@ if not exist "%EDGE%" set "EDGE=msedge"
 
 rem start backend unless port 8787 is already listening
 powershell -NoProfile -Command "if (Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"
-if errorlevel 1 start "Ponko HUD backend" /MIN node "%ROOT%server\server.js"
+if errorlevel 1 start "Ponko-HUD backend" /MIN node "%ROOT%server\server.js"
 timeout /t 1 /nobreak >nul
 
 start "" "%EDGE%" --app=http://127.0.0.1:8787/ ^

@@ -1,4 +1,4 @@
-# Ponko HUD
+# Ponko-HUD
 
 全屏无边框的 eDEX-UI 风格 HUD 桌面应用（Windows）。自己动手画的字符网格，没有 Electron 那套重壳。
 

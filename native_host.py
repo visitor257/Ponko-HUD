@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
-"""Ponko HUD desktop host -- a real application window instead of a browser window.
+"""Ponko-HUD desktop host -- a real application window instead of a browser window.
 
 Why this exists
 ---------------
@@ -39,7 +39,7 @@ import urllib.request
 from ctypes import wintypes
 
 APP_ID = "Ponko-HUD.Desktop"
-APP_TITLE = "Ponko HUD"
+APP_TITLE = "Ponko-HUD"
 ROOT = os.path.dirname(os.path.abspath(__file__))
 ICON = os.path.join(ROOT, "tools", "assets", "Ponko-HUD.ico")
 RUN_DIR = os.path.join(ROOT, "run")
@@ -362,7 +362,7 @@ class UIApi:
 # main
 # --------------------------------------------------------------------------- #
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Ponko HUD native window host")
+    ap = argparse.ArgumentParser(description="Ponko-HUD native window host")
     ap.add_argument("--port", type=int, default=8787)
     ap.add_argument("--windowed", action="store_true",
                     help="windowed mode instead of fullscreen (default is fullscreen borderless)")

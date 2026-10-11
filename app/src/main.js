@@ -502,13 +502,13 @@ function requestQuit() {
   const now = performance.now();
   if (quitArmed && now - quitArmed < 3000) { quitArmed = 0; doQuit(); return; }
   quitArmed = now;
-  selToast = { text: '再点一次「退出」确认关闭 Ponko HUD', until: now + 3000 };
+  selToast = { text: '再点一次「退出」确认关闭 Ponko-HUD', until: now + 3000 };
 }
 
 async function doQuit() {
   quitting = true;                         // 先切态：下一帧按钮就是「退出中…」
   quitArmed = 0;
-  selToast = { text: '正在退出 Ponko HUD…', until: performance.now() + 8000 };
+  selToast = { text: '正在退出 Ponko-HUD…', until: performance.now() + 8000 };
   // 1) 原生窗口（pywebview + WebView2）：走宿主暴露的 JS 桥关掉窗口 —— 干净的退出路径，
   //    窗口一销毁 webview.start 就返回，宿主在 finally 里顺手把 node 后端也收掉。
   //    桥是页面加载后异步注入的，本机实测大约在 start() 后 2s 就绪，所以给它 3s 慢慢等
@@ -834,7 +834,7 @@ function drawZoomTransition(T, C) {
 function drawChrome(T) {
   const cols = grid.cols, rows = grid.rows;
   const model = panels.agent && panels.agent.llmConfigured ? 'local · 已接 LLM' : 'local · 未接 LLM';
-  const left = '▚ PONKO HUD   GLOBE · SHELL · AGENT · MOOD · SYS';
+  const left = '▚ PONKO-HUD   GLOBE · SHELL · AGENT · MOOD · SYS';
   grid.text(0, 0, left, T.accent, T.bg);
 
   // 右上角：退出按钮（全屏无边框窗口没有系统标题栏，这里补一个出口）。

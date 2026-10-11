@@ -1,4 +1,4 @@
-▚ PONKO HUD   [AGENT] SHELL FILES MOOD                 ● local · qwen3-8b   ds-whale @ win32   20:46:57
+▚ PONKO-HUD   [AGENT] SHELL FILES MOOD                 ● local · qwen3-8b   ds-whale @ win32   20:46:57
 ────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ┌SYS────────────────────────live─┐ ┌SHELL────────────pwsh · C:\NetGateBuild─┐ ┌DS·MOOD────────方块字符─┐

@@ -1,5 +1,5 @@
 // Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
-// Ponko HUD 本地后端：纯 Node 标准库，零第三方依赖
+// Ponko-HUD 本地后端：纯 Node 标准库，零第三方依赖
 //   GET  /api/sys            系统快照
 //   POST /api/shell          执行 shell 命令（NDJSON 流：out/err/exit）
 //   POST /api/agent          agent 对话（NDJSON 流：mood/thinking/token/tool/done）
@@ -1020,6 +1020,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, '127.0.0.1', () => {
-  console.log(`Ponko HUD backend  http://127.0.0.1:${PORT}/`);
+  console.log(`Ponko-HUD backend  http://127.0.0.1:${PORT}/`);
   netgeo.netgeo().catch(() => {});        // 预热：外部地理查询要几秒，别让首次点开地球时干等
 });

@@ -40,7 +40,7 @@ export class ShellTab {
     this.histIdx = -1;             // -1 = 未在浏览历史
     this.histDraft = '';           // 进入浏览前正在编辑的草稿
     this._histShown = null;        // 上次由 ↑/↓ 填进输入框的内容（判断用户是否又改了）
-    this.push('info', 'Ponko HUD shell · 持久会话 · 输入 help 看可用命令');
+    this.push('info', 'Ponko-HUD shell · 持久会话 · 输入 help 看可用命令');
     this.refreshState();
   }
 

@@ -111,7 +111,7 @@ class Session:
         # 这两条是 TUI/curses 应用的识别关键（eDEX-UI 也是这么配的）：
         # 没 COLORTERM 的话 htop / ranger / neofetch 之类只用 16 色，版式也会错
         env.setdefault("COLORTERM", "truecolor")
-        env.setdefault("TERM_PROGRAM", "Ponko HUD")
+        env.setdefault("TERM_PROGRAM", "Ponko-HUD")
         for k, v in (env_extra or {}).items():
             env[k] = v
 

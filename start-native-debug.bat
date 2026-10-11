@@ -5,5 +5,5 @@ setlocal
 set "ROOT=%~dp0"
 set "PY=C:\Python314\python.exe"
 if not exist "%PY%" set "PY=python"
-start "Ponko HUD window" "%PY%" "%ROOT%native_host.py" --devtools %*
+start "Ponko-HUD window" "%PY%" "%ROOT%native_host.py" --devtools %*
 endlocal

@@ -1,5 +1,5 @@
 # Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
-"""Capture the Ponko HUD native window to a PNG.
+"""Capture the Ponko-HUD native window to a PNG.
 
 Usage:  python tools/snap_window.py [out.png]
 No third-party packages required.
@@ -12,7 +12,7 @@ import zlib
 
 ctypes.windll.shcore.SetProcessDpiAwareness(2)
 
-TITLE = "Ponko HUD"
+TITLE = "Ponko-HUD"
 
 
 class RECT(ctypes.Structure):

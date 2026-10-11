@@ -122,7 +122,7 @@ def pixel_grid(state):
 
 def main():
     # 顶栏
-    put(0, 0, "▚ PONKO HUD   [AGENT] SHELL FILES MOOD")
+    put(0, 0, "▚ PONKO-HUD   [AGENT] SHELL FILES MOOD")
     meta = "● local · qwen3-8b   ds-whale @ win32   20:46:57"
     put(W - width(meta), 0, meta)
     put(0, 1, "─" * W)
