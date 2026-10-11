@@ -41,5 +41,5 @@ native_host.py  pywebview 原生窗口宿主
 
 [MIT](LICENSE) © 2026 visitor257
 
-第三方资源：`characters/ds-whale/` 下的角色美术素材是独立素材，不在上述授权范围内，
-请勿单独提取使用。
+第三方素材：`characters/ds-whale/` 下的角色美术素材**并非本项目原创**，**不在上述 MIT 授权范围内**。
+本项目**不主张**其任何权利，也**不授予**任何使用许可——请勿单独提取使用。
