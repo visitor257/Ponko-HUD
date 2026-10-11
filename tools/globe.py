@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 """
 globe.py —— 把海陆位图渲染成"方块地球"（字符画版 WebGL Globe）。
 

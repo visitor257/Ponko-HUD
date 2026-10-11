@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // 右上角「✕ 退出」按钮的排版（纯函数，便于回归）
 //
 // 三态共用**同一个宽度**：待确认（armed）/ 退出中（quitting）/ 平常（idle）。

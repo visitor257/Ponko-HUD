@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // 网络地理：本机公网出口 IP / 默认网关 / DNS 服务器 —— 让 GLOBE 面板画真实的自己
 //
 // 数据源：ip-api.com（免费、支持 /batch 一次查多个 IP、IPv4+IPv6、字段全）

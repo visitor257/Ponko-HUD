@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 """Ponko HUD desktop host -- a real application window instead of a browser window.
 
 Why this exists

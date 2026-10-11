@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // 每个面板右下角的「放大 / 还原」按钮（纯函数，便于回归）
 //
 // 点一下 → 该框撑满整个内容区（顶部 chrome 2 行 + 底部提示 2 行保留，退出按钮和快捷键还够得着）；

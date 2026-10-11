@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // 自动生成（tools/extract_mask.py）—— 海陆位图，来自 NASA Blue Marble
 // 1 bit = 1 度网格（360x180 = 8100 字节 packed，1=陆 0=海）
 export const MASK_B64 =

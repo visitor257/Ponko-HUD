@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // 对话流回归：验证 OpenAI 兼容与 Anthropic 两套 SSE 都能被正确解析成 token 事件
 // 配置验证（tools/test_llm.mjs）只证明"连得上"，这里证明"真能聊"——两套协议的
 // SSE 报文格式完全不同（choices[0].delta.content vs content_block_delta.text_delta），

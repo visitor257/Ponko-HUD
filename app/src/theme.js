@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // 主题：一套心情 = 一套配色。心情变化时整个界面（含地球陆地、角色、光标）一起换色。
 import { rgb } from './grid.js';
 

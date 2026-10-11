@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 """回归：宿主暴露给页面的 JS API 只能是"公共方法"。
 
 背景（2026-10-08 实测踩坑）

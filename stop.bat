@@ -1,4 +1,5 @@
 @echo off
+rem Ponko-HUD ¡¤ (c) 2026 visitor257 ¡¤ MIT License ¡¤ github.com/visitor257/Ponko-HUD
 rem Ponko HUD: stop the native window host and its node backend.
 setlocal
 set "ROOT=%~dp0"

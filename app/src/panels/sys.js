@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // SYS：真实系统数据（后端 /api/sys 提供）
 import { ATTR } from '../grid.js';
 

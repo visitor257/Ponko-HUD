@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // 素材包加载器：用户自定义表情的入口
 //
 // 约定（与 tools/charpack.py 对齐）：

@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // 心情：agent 是唯一权威。前端不推断情绪，只做三件事——
 //   1) 执行 agent 的声明（state / face / intensity / note）
 //   2) 把数值平滑友（避免配色跳变）

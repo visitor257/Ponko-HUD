@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 """inject_mask.py —— 把 landmask.b64 塞进 mockup 的 __MASK_B64__ 占位符"""
 import os
 

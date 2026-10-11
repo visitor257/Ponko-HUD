@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // 多终端会话回归：一个标签 = 一个会话，彼此必须完全隔离
 //
 // 背景：全窗口原来只有一路 shell（sh/shellKind/curDir 是模块级全局变量），

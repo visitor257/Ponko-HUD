@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // GLOBE：球面反投影 + 半块字符（移植自 tools/globe.py，数学已自检）
 // 每个字符格 = 上/下两个子像素，各反解一次经纬度回查海陆位图，合成 ▀ 的前景色/背景色
 //

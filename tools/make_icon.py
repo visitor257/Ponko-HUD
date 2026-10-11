@@ -1,3 +1,4 @@
+# Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 """Generate Ponko HUD.ico (multi-size, PNG-in-ICO) with zero third-party deps.
 
 Style: sci-fi HUD -- dark slate shell, cyan frame, scanline grid, tiny wireframe

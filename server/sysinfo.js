@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // 系统数据采集：全部走 Node 标准库，慢项（磁盘/网络/GPU）异步缓存
 const os = require('os');
 const fs = require('fs');

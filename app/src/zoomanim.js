@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // 单框放大 / 还原的过场动画（纯函数，便于回归）
 //
 // 字符网格上做不了真正的像素缩放，这里的做法是「矩形插值」：把起点框和终点框的

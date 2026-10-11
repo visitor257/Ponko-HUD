@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // Ponko HUD 本地后端：纯 Node 标准库，零第三方依赖
 //   GET  /api/sys            系统快照
 //   POST /api/shell          执行 shell 命令（NDJSON 流：out/err/exit）

@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // VT100/xterm 终端仿真器（够用子集）
 //
 // PTY 吐出来的是带 ANSI 转义的字节流：光标定位、颜色、擦除、全屏切换……

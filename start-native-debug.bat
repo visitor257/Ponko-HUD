@@ -1,4 +1,5 @@
 @echo off
+rem Ponko-HUD ¡¤ (c) 2026 visitor257 ¡¤ MIT License ¡¤ github.com/visitor257/Ponko-HUD
 rem Same as start-native.bat but keeps a console + WebView2 dev tools for debugging.
 setlocal
 set "ROOT=%~dp0"

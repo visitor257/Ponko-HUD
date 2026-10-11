@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // LLM 连通性验证回归测试
 // 目的：修「配置框乱填也能通过」之前，验证真的会被拦住。
 // 做法：起一个本地 OpenAI 兼容 mock + 真实后端，逐分支打 /api/llm/test。

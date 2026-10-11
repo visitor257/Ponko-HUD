@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // AGENT：对话流（thinking 块 / tool_call 卡 / 流式回复）+ 底部状态条
 //        未接入 LLM 时，面板正中弹配置框（API 地址 / Key / 模型 + 保存）
 import { ATTR } from '../grid.js';

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 """把界面布局渲染成等宽字符画（对齐到 104 列）。
 
 中文字符占 2 列，所以必须用显示宽度计算，不能直接数 len()。

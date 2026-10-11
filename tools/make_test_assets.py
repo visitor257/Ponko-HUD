@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 """生成 DS娘 测试立绘（5 种表情），用于验证 charpack 素材管线。
 
 素材规范（用户自制素材需满足）：

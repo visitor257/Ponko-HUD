@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // 回归：输入行光标位置 / 配置框光标与 ←→ / 鼠标拖选（都不需要真 GUI）
 import { AgentPanel } from '../app/src/panels/agent.js';
 import { ShellPanel } from '../app/src/panels/shell.js';

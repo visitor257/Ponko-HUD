@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 """charpack —— 素材管线核心：把用户图片转成终端方块字符帧。
 
 这是「用户自定义表情」链路里唯一需要动算法的一步，产出两种格式：

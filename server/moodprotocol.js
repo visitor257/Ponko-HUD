@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 'use strict';
 
 // 心情协议：agent 是心情的唯一权威，前端/后端都不再"推断"情绪。

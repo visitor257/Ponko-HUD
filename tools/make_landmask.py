@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 """
 make_landmask.py —— 把等距圆柱投影(equirectangular)的世界地图压成海陆位图。
 

@@ -1,4 +1,5 @@
 @echo off
+rem Ponko-HUD ¡¤ (c) 2026 visitor257 ¡¤ MIT License ¡¤ github.com/visitor257/Ponko-HUD
 rem Ponko HUD fallback launcher: Edge --app with an ISOLATED profile.
 rem Prefer start-native.bat (real window, own taskbar icon). This one only needs Edge.
 setlocal

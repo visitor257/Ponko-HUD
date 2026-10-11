@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // 字符网格渲染器：整个 UI 的唯一绘制原语
 //
 // 关键点（这是性能与观感的核心）：

@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // SHELL：真命令执行（后端持久 pwsh 会话，cd / 变量都保留）
 //
 // 两种渲染模式：

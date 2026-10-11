@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 """从 mockup/index.html 抽出已注入的 MASK_B64，生成 app/src/landmask.js 模块。
 这样正式工程和视觉稿共用同一份海陆位图，不用重复注入。
 """

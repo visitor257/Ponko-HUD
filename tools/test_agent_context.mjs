@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // 回归：LLM 对话上下文（多轮记忆）
 //
 // 之前用户反馈"对面完全没有记忆"，根因是前端算好了 history 却没传给 askAgent

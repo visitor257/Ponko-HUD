@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 """selftest.py —— 投影正确性自检（往返一致性 + 朝向我们约定的方向）"""
 import globe as g
 

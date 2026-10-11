@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // Ponko HUD PTY regression test.
 //
 // The contrast this file pins down:

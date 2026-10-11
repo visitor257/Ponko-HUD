@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // MOOD：角色（方块字符立绘）+ 心情数值 + 历史曲线 + 表情标签
 // 立绘来自素材包：characters/<pack>/frames/*.json，标签由文件名决定，用户可自定义
 import { blit } from '../charpack.js';

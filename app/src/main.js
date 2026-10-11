@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // 主装配：布局 / 主循环 / 输入 / 鼠标
 import { Grid, ATTR, rgb, mix } from './grid.js';
 import { themeFor, MOOD_KEYS } from './theme.js';

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 """PTY bridge —— 给 Node 后端开一个真正的终端（Windows ConPTY）。
 
 为什么需要它：Node 标准库没有 PTY，而"交互式程序会卡死"的根因就是——

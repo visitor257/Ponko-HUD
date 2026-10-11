@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // 后端接口封装（流式接口用 NDJSON 逐行解析）
 
 export async function sysSnapshot() {

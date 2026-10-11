@@ -1,3 +1,4 @@
+# Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 """Capture the Ponko HUD native window to a PNG.
 
 Usage:  python tools/snap_window.py [out.png]

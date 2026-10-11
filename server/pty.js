@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 'use strict';
 
 // PTY 会话管理：拉起 server/ptybridge.py（ConPTY），用 stdio 上的 JSON lines 通信。
