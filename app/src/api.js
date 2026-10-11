@@ -50,6 +50,15 @@ function stream(url, body, onEvent, onEnd) {
 export const runShell = (cmd, onEvent, onEnd, session) => stream('/api/shell', { cmd, session }, onEvent, onEnd);
 export const askAgent = (text, onEvent, onEnd, history) => stream('/api/agent', { text, history: history || [] }, onEvent, onEnd);
 
+// ── 对话存档（AGENT 多标签）：落在后端的 run/conversations/ —— 那个目录不入库，
+//    所以对话内容永远不会被推到 GitHub。
+export const listConvs = () => fetch('/api/convs')
+  .then((r) => r.json()).catch(() => ({ convs: [] }));
+export const getConv = (id) => fetch('/api/conv?s=' + encodeURIComponent(id))
+  .then((r) => r.json()).catch(() => null);
+export const saveConv = (c) => post('/api/conv', c);
+export const deleteConv = (id) => post('/api/conv/delete', { id });
+
 // ── LLM 接入配置（前端配置框用）
 export const getLlmConfig = () => fetch('/api/llm/config')
   .then((r) => r.json()).catch(() => ({ configured: false }));

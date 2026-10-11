@@ -253,6 +253,17 @@ hidden.addEventListener('input', (e) => {
   mood.touch();                          // 打字不等于情绪，只防"长时间无活动"误判
 });
 hidden.addEventListener('keydown', (e) => {
+  // 删对话的确认摆在最前面：这条确认一旦弹出，回车/ESC 的语义就临时改成"确认/取消"，
+  // 别的分支（发送消息、中断、翻历史）都不该跟它抢。焦点不在 agent 上时自动作废。
+  if (convClose) {
+    if (focus !== 'agent') convClose = null;
+    else if (!e.isComposing && e.key === 'Enter') { e.preventDefault(); confirmConvClose(); return; }
+    else if (!e.isComposing && e.key === 'Escape') {
+      e.preventDefault(); convClose = null;
+      selToast = { text: '已取消删除', until: performance.now() + 1200 };
+      return;
+    }
+  }
   // 复制键在 window 捕获阶段统一处理（见 copySel 下方），这里不再重复。
   // 配置框编辑态：拦截 Tab/↑↓/Enter/Esc 走表单导航；其余按键（含中文 IME）照常进隐藏输入框
   if (focus === 'agent' && panels.agent.inConfig) {
@@ -393,6 +404,8 @@ hidden.addEventListener('compositionend', (e) => {
 
 const selection = new Selection();      // 鼠标拖选（详见 selection.js）
 let selToast = { text: '', until: 0 };
+// 删对话的两步确认（^⇧W 之后）：回车才真删、ESC 取消。关错了可没有回收站可找。
+let convClose = null;                   // { id, title, until }
 // 顶部右上角「退出」按钮：命中区（列范围，行 0）+ 两步确认时间戳
 let exitBtn = { x0: -1, x1: -1, y: -1 };
 let quitArmed = 0;
@@ -445,10 +458,13 @@ window.addEventListener('keydown', (e) => {
   copySel();
 }, true);
 
-// 多标签终端（对齐 eDEX-UI 的终端标签）：^⇧T 新建 / ^⇧W 关闭 / ^Tab、^⇧Tab 切换。
+// 多标签终端 + 多标签对话：^⇧T 新建 / ^⇧W 关闭 / ^Tab、^⇧Tab 切换 —— **按焦点分派**：
+// 焦点在 SHELL 就是终端标签，焦点在 AGENT 就是对话标签。Tab 键切换焦点，所以
+// "我现在在哪个面板里，快捷键就管哪个面板的标签"这条规矩不用记第二套。
 // 同样挂捕获阶段 —— 点过画布或标签栏之后焦点未必还在隐藏输入框上，挂在它身上会漏键。
 function afterTabChange() {
   focus = 'shell';
+  convClose = null;                     // 换到 shell 了，删对话的确认自然作废
   hidden.value = panels.shell.input || '';
   syncHidden();
   const s = panels.shell;
@@ -460,11 +476,52 @@ function afterTabChange() {
     until: performance.now() + 1200,
   };
 }
+
+function afterConvChange() {
+  focus = 'agent';
+  convClose = null;
+  hidden.value = panels.agent.input || '';
+  syncHidden();
+  const a = panels.agent, t = a.tab;
+  selToast = {
+    text: t ? `对话 · ${t.title()} · 共 ${a.tabs.length} 个` : '对话',
+    until: performance.now() + 1200,
+  };
+}
+
+/** ^⇧W：删对话要先确认（回车确认 / ESC 取消），避免一手滑就把整段对话连存档一起删掉 */
+function armConvClose() {
+  const a = panels.agent;
+  if (a.tabs.length <= 1) { selToast = { text: '最后一个对话不能关', until: performance.now() + 1600 }; return; }
+  const t = a.tab;
+  convClose = { id: t.id, title: t.title(), until: performance.now() + 6000 };
+}
+
+function confirmConvClose() {
+  const a = panels.agent, t = a.tab;
+  const label = t ? t.title() : '';
+  convClose = null;
+  if (!t || !a.closeTab()) {
+    selToast = { text: '最后一个对话不能关', until: performance.now() + 1600 };
+    return;
+  }
+  focus = 'agent';
+  hidden.value = a.input || '';
+  syncHidden();
+  selToast = { text: `已删除对话「${label}」`, until: performance.now() + 2000 };
+}
+
 window.addEventListener('keydown', (e) => {
   if (!e.ctrlKey || e.altKey || e.metaKey) return;
   const k = e.key;
+  const onAgent = focus === 'agent';
   if (e.shiftKey && (k === 'T' || k === 't')) {
     e.preventDefault(); e.stopPropagation();
+    if (onAgent) {
+      if (!panels.agent.newTab()) { selToast = { text: '对话数已达上限', until: performance.now() + 1600 }; return; }
+      afterConvChange();
+      return;
+    }
     if (!panels.shell.newTab()) {
       selToast = { text: '标签数已达上限', until: performance.now() + 1600 };
       return;
@@ -474,6 +531,7 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.shiftKey && (k === 'W' || k === 'w')) {
     e.preventDefault(); e.stopPropagation();
+    if (onAgent) { armConvClose(); return; }
     if (!panels.shell.closeTab()) {
       selToast = { text: '最后一个标签不能关', until: performance.now() + 1600 };
       return;
@@ -483,6 +541,7 @@ window.addEventListener('keydown', (e) => {
   }
   if (k === 'Tab') {                       // ^Tab 下一个 / ^⇧Tab 上一个
     e.preventDefault(); e.stopPropagation();
+    if (onAgent) { if (panels.agent.nextTab(e.shiftKey ? -1 : 1)) afterConvChange(); return; }
     if (panels.shell.nextTab(e.shiftKey ? -1 : 1)) afterTabChange();
     return;
   }
@@ -496,6 +555,25 @@ window.addEventListener('keydown', (e) => {
 function drawToast(g, T, now) {
   if (!selToast.text || now > selToast.until) return;
   g.text(0, g.rows - 1, ` ${selToast.text} `, T.panel, T.accent);
+}
+
+/**
+ * 删对话的确认条：占满底部提示那一行（比普通 toast 更醒目 —— 这是要毁数据的一步）。
+ * 顺带在这里做过期检查：屏幕上看不见的确认不该还拦着回车。
+ */
+function drawConvConfirm(g, T, now) {
+  if (!convClose) return false;
+  if (now > convClose.until) { convClose = null; return false; }
+  const msg = ` 删除对话「${convClose.title}」并清掉存档？  回车确认 · ESC 取消 `;
+  let s = '', w = 0;
+  for (const ch of msg) {                  // 窗口太窄就截断，别让文字溢出画布
+    const cw = g.chWidth(ch);
+    if (w + cw > g.cols) break;
+    s += ch; w += cw;
+  }
+  g.fill(0, g.rows - 1, g.cols, 1, ' ', T.bg, T.err);
+  g.text(0, g.rows - 1, s, T.bg, T.err);
+  return true;
 }
 
 // ── 退出应用：顶部右上角有个「✕ 退出」按钮（全屏无边框窗口没有标题栏，得给个出口）──
@@ -514,6 +592,9 @@ function requestQuit() {
 async function doQuit() {
   quitting = true;                         // 先切态：下一帧按钮就是「退出中…」
   quitArmed = 0;
+  // 关窗前把防抖窗口里还没落盘的对话补上，并给它一点点时间跑完这次本地 POST
+  // （不等的话，桥一关请求就被掐断，最后聊的那几句会丢）
+  try { panels.agent.flushSaves(); await new Promise((r) => setTimeout(r, 120)); } catch (e) { /* 尽力而为 */ }
   selToast = { text: '正在退出 Ponko-HUD…', until: performance.now() + 8000 };
   // 1) 原生窗口（pywebview + WebView2）：走宿主暴露的 JS 桥关掉窗口 —— 干净的退出路径，
   //    窗口一销毁 webview.start 就返回，宿主在 finally 里顺手把 node 后端也收掉。
@@ -587,6 +668,22 @@ canvas.addEventListener('mousedown', (e) => {
   const zb = zoomBtnAt(c);
   if (zb) { e.preventDefault(); toggleZoom(zb); return; }
   hidden.focus();
+  // AGENT 标签栏也在框**外**（框顶线上面那一行）。分栏态下那一行正好是横向分割条，
+  // 所以这里必须排在 hsplit 之前：点在标签上 = 切对话，点在空处才落回"拖分割条"。
+  const ar = rects.agent;
+  if ((!zoom || zoom === 'agent') && ar && c.y === panels.agent.tabBarRow() && c.x >= ar.x && c.x < ar.x + ar.w) {
+    const i = panels.agent.tabAt(c.x, c.y);
+    if (i !== null) {
+      focus = 'agent';
+      convClose = null;
+      if (i === -1) panels.agent.newTab();
+      else panels.agent.selectTab(i);
+      hidden.value = panels.agent.input || '';
+      syncHidden();
+      e.preventDefault();
+      return;
+    }
+  }
   // 放大态：分割条跟被盖住的框都不该再响应（它们的 rect 还在，但屏幕上没有）
   if (!zoom) {
     if (inRect(rects.s1, c)) { dragSplit = { k: 's1', x: c.x }; return; }
@@ -865,7 +962,7 @@ function drawChrome(T) {
     ? `▚ 已放大 ${PANEL_NAME[zoom] || zoom} · 点右下角 〼 恢复分栏`
     : `▚ 焦点=${f} · 按住拖选文本 · 地球可拖 · 分割条可拖 · 框右下角 ⛶ 放大`;
   grid.text(0, by + 1, tip, T.dim, T.bg);
-  const keys = `[TAB]切换 [^⏎]发送/回车换行 [ESC]退选/中断 [^⇧C]或[^C]复制 [^⇧T]新标签 [^Tab]切换标签 [^M]心情 [^⇧Q]退出 [滚轮]滚动`;
+  const keys = `[TAB]切换 [^⏎]发送/回车换行 [ESC]退选/中断 [^⇧C]或[^C]复制 [^⇧T]新标签 [^Tab]切标签(随焦点) [^⇧W]关标签 [^M]心情 [^⇧Q]退出 [滚轮]滚动`;
   grid.text(Math.max(0, cols - keys.length), by + 1, keys, T.darker, T.bg);
 }
 
@@ -916,16 +1013,23 @@ function frame(now) {
   if (!zoom && !zoomAnim) drawSplit(T);
 
   drawChrome(T);
-  // SHELL 标签栏画在框顶线**之上**（框外），必须晚于 chrome 的分隔线 —— 否则那行 '─' 会盖掉它
+  // SHELL / AGENT 的标签栏都画在框顶线**之上**（框外），必须晚于 chrome 的分隔线 ——
+  // 否则那行 '─' 会盖掉它们。AGENT 的那一行在分栏态下就是横向分割条，所以它在
+  // 鼠标判定里也必须排在分割条前面（见 canvas 的 mousedown）。
+  grid.fadeBg = T.panel;
   if (!zoomAnim && (!zoom || zoom === 'shell') && panels.shell.open >= 1) {
-    grid.fadeBg = T.panel;
     grid.fade = (panels.shell.contentFade === undefined || panels.shell.contentFade >= 1) ? 1 : panels.shell.contentFade;
     panels.shell.drawTabBar(grid, C);
-    grid.fade = 1;
   }
+  if (!zoomAnim && (!zoom || zoom === 'agent') && panels.agent.open >= 1) {
+    grid.fade = (panels.agent.contentFade === undefined || panels.agent.contentFade >= 1) ? 1 : panels.agent.contentFade;
+    panels.agent.drawTabBar(grid, C);
+  }
+  grid.fade = 1;
   drawZoomButtons(T);   // 各框右下角的放大/还原按钮（盖在底边线上，所以必须最后画）
   selection.paint(grid);   // 选区反色：必须在所有面板画完之后、render 之前
-  drawToast(grid, T, now);
+  // 删对话的确认条比普通 toast 更优先：它是要毁数据的一步，别被别的提示盖住
+  if (!drawConvConfirm(grid, T, now)) drawToast(grid, T, now);
   grid.render();
 
   requestAnimationFrame(frame);
@@ -953,6 +1057,11 @@ async function boot() {
   }
   panels.agent.onToken = () => tokWindow.push(1);
   panels.shell.onLine = scanIps;
+  // 恢复上次的对话：存档在 run/conversations/（该目录不入库），一个都没存过就保持现状。
+  // 这是异步的 —— 恢复完成时标签栏自己会重画，不用等它再启动主循环。
+  panels.agent.restore();
+  // 页面被隐藏 / 关掉时，把防抖窗口里剩下的内容立刻落盘（刷新、关窗都算）
+  window.addEventListener('pagehide', () => { try { panels.agent.flushSaves(); } catch (e) { /* 尽力而为 */ } });
   // 调试：?hscroll=N 让地球面板 IP 说明初始横向偏移 N 列（验证左右滚动用，永久固定不自动）
   const hs = parseInt(q.get('hscroll'), 10);
   if (!Number.isNaN(hs)) { panels.globe._manualTarget = hs; panels.globe._manualUntil = 1e12; }

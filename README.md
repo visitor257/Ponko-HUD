@@ -5,8 +5,8 @@
 ## 特性
 
 - **自绘字符网格**：Canvas 2D 逐字符渲染整个界面，不是 DOM 拼出来的
-- **真终端**：ConPTY 驱动的 PTY，按键裸直通（参照 eDEX-UI / xterm.js 模型），支持 vim / python / htop 等全交互程序，中文 IME 正常
-- **Agent 对话**：接 OpenAI 兼容接口，流式输出；未配置时界面内直接弹配置框
+- **真终端**：ConPTY 驱动的 PTY，按键裸直通（参照 eDEX-UI / xterm.js 模型），支持 vim / python / htop 等全交互程序，中文 IME 正常；多标签终端，每个标签一个独立会话
+- **Agent 对话**：接 OpenAI 兼容接口，流式输出；未配置时界面内直接弹配置框。多标签 = 多个对话，自动存档到 `run/conversations/`，重启原样恢复
 - **实时地理地球**：真实 IP / DNS 地理位置，字符点阵球面投影 + 自动跑马灯
 - **心情角色**：方块字符动画角色，心情由 Agent 正文标记 `[[mood:STATE|face:...]]` 自主控制
 - **原生窗口**：pywebview + WebView2，独立任务栏身份、自有图标、单实例
@@ -30,7 +30,11 @@ app/src/        前端：grid 字符网格、vt 终端仿真、panels 各面板
 server/         后端：server.js HTTP 服务、pty.js PTY 管理、ptybridge.py Windows ConPTY 桥
 characters/     角色动画资源（.ans / .json）
 native_host.py  pywebview 原生窗口宿主
+run/            运行时产物（对话存档、日志）：已在 .gitignore 中排除，**不进仓库**
 ```
+
+多标签快捷键（`Ctrl+Shift+T` 新建 / `Ctrl+Tab` 切换 / `Ctrl+Shift+W` 关闭）按**焦点**分派：
+焦点在 SHELL 时管终端标签，焦点在 AGENT 时管对话标签（删对话会先弹一行确认）。
 
 ## 说明
 

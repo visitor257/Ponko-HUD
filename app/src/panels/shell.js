@@ -9,25 +9,12 @@
 // 多标签（对齐 eDEX-UI 的终端标签）：ShellTab = 一个标签的全部状态，ShellPanel = 标签栏 +
 // 当前标签。每个标签在后端是一个独立的会话（自己的持久 pwsh、cwd、shell 种类、PTY），
 // 后台标签的 PTY 流也不退订 —— 切回来屏幕内容、滚屏位置都还在。
-import { ATTR, rgb, mix } from '../grid.js';
+import { ATTR, mix } from '../grid.js';
+import { TAB_COLORS } from '../tabcolors.js';
 import { runShell, abortShell, ptyWrite, ptyResize, ptyStop, ptyClose, ptyStream, shellState } from '../api.js';
 import { VT, cellColor } from '../vt.js';
 
-const MAX_TABS = 8;
-
-// 标签识别不用数字编号，用颜色：每个标签拿到一个当前没人占用的色，画成标签栏的色标
-// 与 SHELL 顶线上的小方块。同一时刻最多 MAX_TABS 个，颜色刚好够分。
-// 色相均匀铺开、彼此一眼能分；默认派到蓝色（先别撞主题青），青色排在后面备用
-const TAB_COLORS = [
-  rgb(96, 168, 255),    // 蓝
-  rgb(248, 196, 96),    // 金
-  rgb(126, 224, 152),   // 薄荷
-  rgb(248, 146, 200),   // 粉
-  rgb(198, 140, 252),   // 紫
-  rgb(78, 214, 208),    // 青（跟主题色最近，排后面）
-  rgb(248, 148, 96),    // 橙
-  rgb(190, 226, 104),   // 黄绿
-];
+const MAX_TABS = TAB_COLORS.length;      // 上限 = 色板容量（每个标签一个独有色）
 
 // ── 一个标签：所有状态都在实例上，标签之间互不共享 ────────────────────────
 export class ShellTab {
@@ -167,6 +154,8 @@ export class ShellTab {
       this.push('info', '真终端 = 按键直通：^C 中断 · ^D 结束输入 · ^E 退出终端');
       this.push('info', '多标签：^⇧T 新建 · ^Tab 切换 · ^⇧W 关闭（各标签互相独立）');
       this.push('info', '         每个标签一个颜色（标签栏 / SHELL 右上角各一块），认颜色不认编号');
+      this.push('info', 'AGENT 那边也有多标签对话，同一组快捷键按「焦点」分派：焦点在 AGENT 时');
+      this.push('info', '         ^⇧T/^Tab 操作对话、^⇧W 删对话（会先弹一行确认）；对话自动存档，重启原样恢复');
       return;
     }
     this.busy = true;

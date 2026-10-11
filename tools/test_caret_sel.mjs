@@ -92,7 +92,8 @@ console.log('\n── 2. AGENT 输入行：同样按 caret 定位 ──');
   a.input = '你好 hello';
   const caretCol = (caret) => {
     a.caret = caret; g.sets.length = 0; a.draw(g, C);
-    const hit = g.sets.find((v) => v.ch === '█');
+    // 只看输入框那一行的 █：面板顶线右端也有标签色块（同一个字符）
+    const hit = g.sets.find((v) => v.ch === '█' && v.y > a.rect.y);
     return hit ? hit.x : -1;
   };
   const base = caretCol(0);
@@ -286,7 +287,7 @@ console.log('\n── 6. AGENT 输入框多行 ──');
   chk('末尾一个换行 → 2 行', a.inputRows(g) === 2, a.inputRows(g));
   chk('caret 在换行后 → 光标落第 2 行', a.inputWindow(g).cRow === 1, a.inputWindow(g).cRow);
 
-  const caretDraw = () => { g.sets.length = 0; a.draw(g, C); return g.sets.find((v) => v.ch === '█'); };
+  const caretDraw = () => { g.sets.length = 0; a.draw(g, C); return g.sets.find((v) => v.ch === '█' && v.y > a.rect.y); };
   a.input = '第一行\n'; a.caret = 4;                        // 换行之后 → 光标在第 2 行
   const yTail = caretDraw().y;
   a.input = '第一行\n第二行'; a.caret = 3;                   // 紧挨 '\n' 之前 → 仍属第 1 行
@@ -857,6 +858,136 @@ console.log('\n── 12. 放大 / 还原的过场动画（不再一帧到位）
   // 两种语义不能混：UI 关闭仍然保护最后一个
   chk('closeTab 仍保护最后一个（与 exit 语义不同）',
     p.closeTab() === false && p.tabs.length === 1, '');
+}
+
+// ── 15. 多标签对话：一个标签一份对话，彼此不串；标签栏可点；标签名来自第一条提问 ──
+console.log('\n── 15. 多标签对话 ──');
+{
+  const g = mkGrid();
+  const a = new AgentPanel({});
+  a.layout({ x: 3, y: 4, w: 60, h: 16 });
+
+  chk('默认只有一个对话', a.tabs.length === 1 && a.active === 0, `${a.tabs.length}/${a.active}`);
+  chk('对话 id 能直接当存档文件名', /^[A-Za-z0-9_-]{1,40}$/.test(a.tab.id), a.tab.id);
+  chk('没说过话的对话标签名是「新对话」', a.tab.title() === '新对话', a.tab.title());
+
+  a.push('user', '帮我看下构建为什么失败');
+  chk('说过话之后标签名取第一条提问', a.tab.title() === '帮我看下构建…', a.tab.title());
+
+  const c0 = a.tab;
+  a.input = 'aaa'; a.caret = 3;
+  const c1 = a.newTab();
+  chk('新建后两个对话且焦点切到新的', a.tabs.length === 2 && a.active === 1, `${a.tabs.length}/${a.active}`);
+  chk('新对话是空的（没串到旧对话）',
+    a.msgs.length === 0 && a.input === '' && a.caret === 0,
+    `${a.msgs.length}/${JSON.stringify(a.input)}/${a.caret}`);
+  chk('两个对话色标不同', c0.ci !== c1.ci, `${c0.ci}/${c1.ci}`);
+
+  a.input = 'bbb';
+  a.selectTab(0);
+  chk('切回对话 1 看到它自己的输入与光标', a.input === 'aaa' && a.caret === 3, `${a.input}/${a.caret}`);
+  chk('对话 2 的输入没被改掉', a.tabs[1].input === 'bbb', a.tabs[1].input);
+  chk('对话 1 的提问还在，对话 2 的一条没有',
+    a.msgs.filter((m) => m.role === 'user').length === 1 && a.tabs[1].msgs.length === 0,
+    `${a.msgs.length}/${a.tabs[1].msgs.length}`);
+
+  a.selectTab(1);
+  a.nextTab(1);
+  chk('nextTab(1) 到下个对话', a.active === 0, a.active);
+  a.nextTab(-1);
+  chk('nextTab(-1) 回上一个', a.active === 1, a.active);
+
+  // 心情语句要记进"当前这个对话"，不能串到隔壁
+  const a6 = new AgentPanel({});
+  a6.newTab();
+  a6.tabs[0].msgs = []; a6.tabs[1].msgs = [];
+  a6.form.fields[4].value = 'show'; a6.applyMoodPref();
+  a6.selectTab(0);
+  a6.noteMood({ t: 'mood', raw: '[[mood:think]]' });
+  chk('心情语句只记进当前对话',
+    a6.tabs[0].msgs.length === 1 && a6.tabs[1].msgs.length === 0,
+    `${a6.tabs[0].msgs.length}/${a6.tabs[1].msgs.length}`);
+  chk('显示开关同步到了之后新建的对话', a6.tabs[1].showMoodTags === true, String(a6.tabs[1].showMoodTags));
+
+  // 标签栏绘制 + 命中区（在 AGENT 框**外**：框顶线上面那一行）
+  a.selectTab(0);
+  g.rows.clear(); g.sets.length = 0;
+  a.draw(g, C);
+  a.drawTabBar(g, C);
+  const barRow = a.tabBarRow();
+  const rowOf = (grid, y) => {
+    const r = grid.rows.get(y) || {};
+    return Object.keys(r).sort((x, z) => x - z).map((k) => (r[k] === '~' ? '' : r[k])).join('');
+  };
+  const bar = rowOf(g, barRow);
+  chk('标签栏在框顶线之上（框外）', barRow === a.rect.y - 1 && barRow === 3, barRow);
+  chk('标签栏不出现数字编号', !/[0-9]/.test(bar), JSON.stringify(bar));
+  chk('标签栏有新建按钮 +', bar.includes('+'), JSON.stringify(bar));
+  chk('标签栏画出了两个对话的名字（含第一条提问）', bar.includes('帮我看下构建') && bar.includes('新对话'), JSON.stringify(bar));
+  chk('tabAt 命中对话 2', a.tabAt(a._tabHits[1].x0, barRow) === 1, JSON.stringify(a._tabHits[1]));
+  chk('tabAt 命中“+”返回 -1', a.tabAt(a._tabHits[2].x0, barRow) === -1, JSON.stringify(a._tabHits[2]));
+  const barMap = g.rows.get(barRow) || {};
+  chk('当前对话实心色块、其它半块',
+    barMap[a._tabHits[0].x0] === '█' && barMap[a._tabHits[1].x0] === '▄',
+    `${barMap[a._tabHits[0].x0]}/${barMap[a._tabHits[1].x0]}`);
+  const k0 = g.fgAt(a._tabHits[0].x0, barRow), k1 = g.fgAt(a._tabHits[1].x0, barRow);
+  chk('两个对话的色标不是一个颜色',
+    Number.isFinite(k0) && Number.isFinite(k1) && k0 !== k1, `${k0}/${k1}`);
+
+  // 框顶线右端：一小排对话色块（要往左让出 'llm' / '未接LLM' 那截状态字）
+  const topTxt = rowOf(g, a.rect.y);
+  const hdrW = g.strWidth('未接LLM');
+  const need = 2 * 2 - 1;
+  const mx = (a.rect.x + a.rect.w - 1) - (hdrW + 1) - need;
+  chk('顶线右端是色标而不是数字', !/[0-9]/.test(topTxt), JSON.stringify(topTxt));
+  chk('顶线色标个数 = 对话个数', (topTxt.match(/[█▄]/g) || []).length === 2, JSON.stringify(topTxt));
+  const topRow = g.rows.get(a.rect.y) || {};
+  chk('顶线色块顺序 = 对话顺序，当前那个实心',
+    topRow[mx] === '█' && topRow[mx + 2] === '▄', `${topRow[mx]}/${topRow[mx + 2]}`);
+  chk('顶线色块用的是各自对话的颜色',
+    g.fgAt(mx, a.rect.y) === k0 && g.fgAt(mx + 2, a.rect.y) === k1,
+    `${g.fgAt(mx, a.rect.y)}/${g.fgAt(mx + 2, a.rect.y)}`);
+  chk('顶线色标别压到状态字（llm）上', mx + need - 1 < a.rect.x + a.rect.w - 1 - hdrW,
+    `${mx + need - 1} vs ${a.rect.x + a.rect.w - 1 - hdrW}`);
+
+  // 颜色跟着对话走，不跟着位置走
+  const a4 = new AgentPanel({});
+  const tA = a4.tabs[0];
+  const tB = a4.newTab(), tC = a4.newTab();
+  chk('三个对话颜色互不相同', new Set([tA.ci, tB.ci, tC.ci]).size === 3, `${tA.ci}/${tB.ci}/${tC.ci}`);
+  a4.closeTab(a4.tabs.indexOf(tB));
+  chk('关掉中间那个，剩下的颜色不变（不看位置）',
+    a4.tabs.map((t) => t.ci).join(',') === [tA.ci, tC.ci].join(','),
+    a4.tabs.map((t) => t.ci).join(','));
+  const tD = a4.newTab();
+  chk('新对话不套用刚释放的颜色（免得看成那个对话回来了）', tD.ci !== tB.ci, `${tD.ci} vs ${tB.ci}`);
+
+  // 关闭：最后一个不给关（丢的是整个对话，所以前端还要先弹一行确认才走到这儿）
+  const a5 = new AgentPanel({});
+  chk('只剩一个对话时拒绝关闭', a5.closeTab() === false && a5.tabs.length === 1, '');
+  a5.newTab();
+  chk('两个时可以关，关完剩一个', a5.closeTab() === true && a5.tabs.length === 1, '');
+
+  // 上限 = 色板容量，超了要明确拒绝
+  const a7 = new AgentPanel({});
+  for (let i = 0; i < 12; i++) a7.newTab();
+  chk('对话数有上限（色板给每个对话一个独有色）',
+    a7.tabs.length === 8 && a7.newTab() === null, String(a7.tabs.length));
+  chk('上限内颜色不重复', new Set(a7.tabs.map((t) => t.ci)).size === a7.tabs.length,
+    a7.tabs.map((t) => t.ci).join(','));
+}
+
+// ── 16. 对话存档不能被推上 GitHub ────────────────────────────────────────
+// 对话内容写在 run/conversations/ 下；推送脚本与 git 都按 .gitignore 排除 run/。
+// 这条是"防呆"回归：哪天有人顺手把 run/ 从 .gitignore 里删了，对话就会跟着进仓库。
+console.log('\n── 16. 对话存档不进仓库 ──');
+{
+  const gi = readFileSync(new URL('../.gitignore', import.meta.url), 'utf8');
+  chk('.gitignore 排除了 run/（对话存档就在那儿）', /^\s*run\/?\s*$/m.test(gi), gi.split('\n').filter((l) => l.includes('run')).join('|'));
+  const src = readFileSync(new URL('../server/server.js', import.meta.url), 'utf8');
+  chk('服务端把存档写在 run/conversations/ 下',
+    /path\.join\(ROOT,\s*'run',\s*'conversations'\)/.test(src),
+    (src.match(/CONV_DIR\s*=.*/) || [''])[0]);
 }
 
 console.log(`\n${fail === 0 ? '全部通过' : fail + ' 项失败'}`);

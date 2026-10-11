@@ -150,6 +150,44 @@ const jget = (url) => fetch(BACK + url).then((r) => r.json());
   }
   record('超过上限后会拒绝新建会话', refused, `created=${created} max=${maxN}`);
 
+  // 10) 对话存档（AGENT 多标签）：写盘 → 清单 → 取回 → 删除
+  //     内容落在 run/conversations/（.gitignore 里排除），所以只在本机留着，不会进仓库
+  const CID = 'ctest1';
+  const MSGS = [
+    { role: 'user', text: '你好' },
+    { role: 'agent', text: '你好呀', stream: true, t: 12345 },   // 界面态字段不该落盘
+    { role: 'mood', text: '[[mood:idle]]' },
+    { role: 'bogus', text: '非法角色不该存进来' },
+  ];
+  const w = await jpost('/api/conv', { id: CID, title: '测试对话', msgs: MSGS });
+  record('对话落盘成功', w.ok === true, JSON.stringify(w));
+  const list2 = await jget('/api/convs');
+  record('清单里出现该对话', (list2.convs || []).some((c) => c.id === CID), JSON.stringify((list2.convs || []).map((c) => c.id)));
+  record('清单带上限（= 前端色板容量）', list2.max === 8, String(list2.max));
+  const got = await jget('/api/conv?s=' + CID);
+  record('取回的消息条数正确（非法角色被剔除）', got.msgs.length === 3, JSON.stringify(got.msgs));
+  record('取回的消息不带流式中间态', got.msgs.every((m) => m.stream === undefined && m.t === undefined),
+    JSON.stringify(got.msgs[0]));
+  record('标题一并存/取回来', got.title === '测试对话', got.title);
+
+  // id 不合法就拒绝：这里挡的是路径穿越（../ 直接写到 run/ 外面去）
+  const evilW = await jpost('/api/conv', { id: '../evil', title: 'x', msgs: MSGS });
+  record('非法 id 落盘被拒绝（挡路径穿越）', evilW.ok === false, JSON.stringify(evilW));
+  const evilGet = await fetch(BACK + '/api/conv?s=' + encodeURIComponent('../evil'));
+  record('非法 id 取回是 404', evilGet.status === 404, String(evilGet.status));
+
+  // 只有欢迎语、用户一个字没说的对话不落盘（否则每开一次就多一个空对话）
+  const emptyW = await jpost('/api/conv', { id: 'cempty', title: '欢迎', msgs: [{ role: 'agent', text: '已就绪' }] });
+  record('没说过话的对话不落盘', emptyW.ok === false, JSON.stringify(emptyW));
+
+  const del = await jpost('/api/conv/delete', { id: CID });
+  record('删除对话返回 ok', del.ok === true, JSON.stringify(del));
+  const list3 = await jget('/api/convs');
+  record('删除后清单里没有了', !(list3.convs || []).some((c) => c.id === CID),
+    JSON.stringify((list3.convs || []).map((c) => c.id)));
+  const gone = await fetch(BACK + '/api/conv?s=' + CID);
+  record('删除后取回 404', gone.status === 404, String(gone.status));
+
   backend.kill();
   await sleep(300);            // 让在飞的请求/连接收干净，别把收尾噪音算进来
   const failed = results.filter((x) => !x.ok);

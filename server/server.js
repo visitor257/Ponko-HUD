@@ -6,6 +6,9 @@
 //                            ★ mood 事件完全由 agent 的正文标记产出，后端不推断情绪
 //   GET  /api/mood/protocol  心情协议：状态枚举 + 可用表情 + 给 LLM 的 system 提示词
 //   GET  /api/charpacks      列出素材包（用户自定义表情）
+//   GET  /api/convs          对话存档清单（AGENT 多标签）
+//   GET  /api/conv?s=id      取一个对话全文 / POST 落盘 / POST /api/conv/delete 删除
+//                            ★ 存在 run/conversations/，该目录不入库 → 对话不会被推上 GitHub
 //   /*                       静态文件（app/ 目录）
 const http = require('http');
 const fs = require('fs');
@@ -850,6 +853,84 @@ function facesFromPacks() {
   return [...out].sort();
 }
 
+// ─────────────────────────────── 对话存档（AGENT 多标签 = 多个对话）
+//
+// 存到 run/conversations/<id>.json。**run/ 已经写在 .gitignore 与推送脚本的排除项里**，
+// 所以对话内容只在本机留着，绝不会跟着代码推上 GitHub —— 这正是放这里的理由。
+// 为什么不用 localStorage：① WebView2 里它未必可用（隐私模式 / 异常状态）；
+// ② 服务端写盘与前端渲染解耦，重启后一次 GET 就能把标签栏全量恢复；
+// ③ 前端崩了 / 刷新了，内容也已经在盘上。
+const CONV_DIR = path.join(ROOT, 'run', 'conversations');
+const CONV_ID_RE = /^[A-Za-z0-9_-]{1,40}$/;          // 同时挡住 ../ 之类的路径穿越
+const CONV_MAX = 8;                                  // 最多几个对话标签（= 前端色板容量）
+const CONV_MAX_MSGS = 300;
+const CONV_MAX_TEXT = 20000;                         // 单条消息上限，别让一个文件无限长
+const CONV_ROLES = new Set(['user', 'agent', 'think', 'tool', 'mood', 'info']);
+
+function convPath(id) { return path.join(CONV_DIR, id + '.json'); }
+
+/** 只留下有意义的字段：流式中间态（stream/done）、时间戳、界面态都不落盘 */
+function cleanMsgs(msgs) {
+  const out = [];
+  if (!Array.isArray(msgs)) return out;
+  for (const m of msgs.slice(-CONV_MAX_MSGS)) {
+    if (!m || typeof m !== 'object') continue;
+    const role = String(m.role || '');
+    if (!CONV_ROLES.has(role)) continue;
+    const text = String(m.text === undefined || m.text === null ? '' : m.text).slice(0, CONV_MAX_TEXT);
+    const o = { role, text };
+    if (m.result) o.result = String(m.result).slice(0, CONV_MAX_TEXT);
+    out.push(o);
+  }
+  return out;
+}
+const hasUser = (msgs) => msgs.some((m) => m.role === 'user' && m.text.trim());
+
+function listConvs() {
+  const out = [];
+  let names = [];
+  try { names = fs.readdirSync(CONV_DIR); } catch (e) { return out; }
+  for (const n of names) {
+    if (!n.endsWith('.json')) continue;
+    const id = n.slice(0, -5);
+    if (!CONV_ID_RE.test(id)) continue;
+    try {
+      const j = JSON.parse(fs.readFileSync(convPath(id), 'utf8'));
+      const msgs = Array.isArray(j.msgs) ? j.msgs : [];
+      // 只有一句欢迎语的空对话不入列（用户从没说过话就不该占一个标签）
+      if (!hasUser(msgs)) continue;
+      out.push({ id, title: String(j.title || ''), updatedAt: Number(j.updatedAt) || 0, count: msgs.length });
+    } catch (e) { /* 坏文件跳过，不要因此让整个列表接口挂掉 */ }
+  }
+  out.sort((a, b) => a.updatedAt - b.updatedAt);      // 旧 → 新：恢复成标签时顺序稳定
+  return out;
+}
+
+function readConv(id) {
+  if (!CONV_ID_RE.test(String(id || ''))) return null;
+  try {
+    const j = JSON.parse(fs.readFileSync(convPath(id), 'utf8'));
+    return { id, title: String(j.title || ''), updatedAt: Number(j.updatedAt) || 0, msgs: cleanMsgs(j.msgs) };
+  } catch (e) { return null; }
+}
+
+function writeConv(id, title, msgs) {
+  if (!CONV_ID_RE.test(String(id || ''))) return false;
+  const clean = cleanMsgs(msgs);
+  if (!hasUser(clean)) return false;                  // 没说过话的对话不落盘
+  try {
+    fs.mkdirSync(CONV_DIR, { recursive: true });
+    const data = { id, title: String(title || '').slice(0, 120), updatedAt: Date.now(), msgs: clean };
+    fs.writeFileSync(convPath(id), JSON.stringify(data));
+    return true;
+  } catch (e) { return false; }
+}
+
+function dropConv(id) {
+  if (!CONV_ID_RE.test(String(id || ''))) return false;
+  try { fs.unlinkSync(convPath(id)); return true; } catch (e) { return false; }
+}
+
 // ─────────────────────────────── 素材包
 function listCharpacks() {
   const out = [];
@@ -948,6 +1029,21 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/agent' && req.method === 'POST') {
       const body = JSON.parse((await readBody(req)) || '{}');
       return await streamAgent(res, body.text || '', body.history || []);
+    }
+
+    // 对话存档（AGENT 多标签）。落在 run/conversations/ —— 该目录不入库，不会被推到 GitHub。
+    if (p === '/api/convs') return sendJson(res, { convs: listConvs(), max: CONV_MAX });
+    if (p === '/api/conv' && req.method === 'GET') {
+      const c = readConv(u.searchParams.get('s'));
+      return c ? sendJson(res, c) : sendJson(res, { error: 'not found' }, 404);
+    }
+    if (p === '/api/conv' && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req)) || '{}');
+      return sendJson(res, { ok: writeConv(b.id, b.title, b.msgs) });
+    }
+    if (p === '/api/conv/delete' && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req)) || '{}');
+      return sendJson(res, { ok: dropConv(b.id) });
     }
 
     // ── PTY：真终端会话（每个标签一份；session 省略即默认会话 '0'）
