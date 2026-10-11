@@ -40,7 +40,7 @@ export class ShellTab {
     this.histIdx = -1;             // -1 = 未在浏览历史
     this.histDraft = '';           // 进入浏览前正在编辑的草稿
     this._histShown = null;        // 上次由 ↑/↓ 填进输入框的内容（判断用户是否又改了）
-    this.push('info', 'Ponko-HUD shell · 持久会话 · 输入 help 看可用命令');
+    this.push('info', 'Ponko-HUD shell · 持久会话 · 输入 ponko-help 看可用命令');
     this.refreshState();
   }
 
@@ -137,7 +137,10 @@ export class ShellTab {
     if (this.hist[this.hist.length - 1] !== c) this.hist.push(c);
     this.histIdx = -1; this.histDraft = ''; this._histShown = null;
     if (c === 'clear' || c === 'cls') { this.lines.length = 0; return; }
-    if (c === 'help') {
+    // 用 ponko-help 而不是 help：后者会盖掉 PowerShell 的 help（Get-Help）与 CMD 的 help.exe，
+    // 而本面板的非 PTY 模式下内置命令是优先拦截的，原生那条就永远执行不到。
+    if (c === 'ponko-help') {
+      this.push('info', 'Ponko-HUD 面板帮助 · 原生 help / Get-Help 未被占用，照常可用');
       this.push('info', '当前 shell：' + (this.kind === 'cmd' ? 'CMD' : 'PowerShell'));
       this.push('info', 'cmd / powershell   切换 shell（exit 从 CMD 退回）');
       this.push('info', 'clear 清屏 · ESC 中断 · ↑/↓ 翻命令历史 · pty <cmd> 开真终端（任意程序都行）');

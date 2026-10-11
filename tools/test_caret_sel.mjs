@@ -1,5 +1,6 @@
 // Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // 回归：输入行光标位置 / 配置框光标与 ←→ / 鼠标拖选（都不需要真 GUI）
+import { readFileSync } from 'node:fs';
 import { AgentPanel } from '../app/src/panels/agent.js';
 import { ShellPanel } from '../app/src/panels/shell.js';
 import { Selection } from '../app/src/selection.js';
@@ -752,6 +753,34 @@ console.log('\n── 12. 放大 / 还原的过场动画（不再一帧到位）
     ZOOM_W.move > ZOOM_W.out && ZOOM_W.move > ZOOM_W.in, JSON.stringify(ZOOM_W));
   chk('单个框自身淡完的时长 ≤ 所在段（否则会被段末截断）',
     ZOOM_OTHER_W <= 1 && ZOOM_OTHER_W > 0.2, ZOOM_OTHER_W);
+}
+
+// ── 13. shell 内置命令不得遮蔽原生命令 ──────────────────────────────────
+// 面板的非 PTY 模式下，内置命令是**先于后端执行**拦截的（exec 里在 runShell 之前 return）。
+// 所以任何跟 PowerShell / CMD 同名的内置命令都会让原生那条永远执行不到——`help` 就是典型：
+// PowerShell 里 help 是 Get-Help（查文档），CMD 里是 help.exe，语义跟我们的面板说明完全不同。
+// 内置命令一律加 `ponko-` 前缀；`clear`/`cls` 例外——它们与原生 Clear-Host / cls 语义一致（都是清屏）。
+{
+  const src = readFileSync(new URL('../app/src/panels/shell.js', import.meta.url), 'utf8');
+
+  // 逐行取命令拦截点：形如 if (c === 'xxx')
+  const builtins = [...src.matchAll(/if\s*\(\s*c\s*===\s*'([^']+)'/g)].map((m) => m[1]);
+
+  chk('help 不再被内置拦截（否则盖掉 PowerShell Get-Help / CMD help.exe）',
+    !builtins.includes('help'), builtins.join(', '));
+  chk('改成了 ponko-help', builtins.includes('ponko-help'), builtins.join(', '));
+
+  // 其它内置命令要么带 ponko- 前缀，要么与原生语义一致（clear/cls 都是清屏）
+  const ALLOW = new Set(['clear', 'cls']);
+  const bad = builtins.filter((b) => !b.startsWith('ponko-') && !ALLOW.has(b));
+  chk('不存在其它会遮蔽原生命令的内置命令', bad.length === 0, bad.join(', ') || '（无）');
+
+  // 用户是看欢迎语才知道有这个命令的，提示里的名字必须跟着改
+  const welcome = src.match(/Ponko-HUD shell[^']*/);
+  chk('欢迎语提示的是 ponko-help', !!welcome && welcome[0].includes('ponko-help'),
+    welcome ? welcome[0] : '(没找到欢迎语)');
+  chk('欢迎语不再指向裸 help', !!welcome && !/输入\s+help\b/.test(welcome[0]),
+    welcome ? welcome[0] : '');
 }
 
 console.log(`\n${fail === 0 ? '全部通过' : fail + ' 项失败'}`);
