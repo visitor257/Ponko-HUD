@@ -438,16 +438,22 @@ function runCommand(sess, cmd, onLine, onExit) {
     return onExit(0, null);
   }
 
-  // ── exit：CMD 模式下等于退回 PowerShell
+  // ── exit / quit：结束这个标签的 shell 会话
+  // 一个标签 = 一个会话，所以会话没了标签也该关——前端收到 dead 后负责收标签。
+  // CMD 模式只是本会话的一层壳（不是独立进程），所以那里 exit 仍是"退回 PowerShell"，
+  // 再输一次才真的收掉；两级退出，跟 cmd 里套 pwsh 的直觉一致。
   if (noArgs && (bare === 'exit' || bare === 'quit')) {
     if (sess.kind === 'cmd') {
       sess.kind = 'pwsh';
       pwshCd(sess, sess.cwd);
       onLine(sess.kind, 'shell');
-      onLine('已退回 PowerShell 模式。', 'info');
+      onLine('已退回 PowerShell 模式。再输一次 exit 会关掉这个标签的 shell。', 'info');
       return onExit(0, null);
     }
-    onLine('这是持久 PowerShell 会话，exit 会关掉整个会话。要退出程序：点右上角「✕ 退出」或按 ^⇧Q（或运行 stop.bat）。', 'info');
+    onLine('shell 会话已结束，标签随之关闭。要退出整个程序：点右上角「✕ 退出」或按 ^⇧Q（或运行 stop.bat）。', 'info');
+    onLine('__dead__', 'dead');          // 前端据此关标签（并补一个新的）
+    // 让这条响应流先收尾再 kill 子进程，否则流会被掐断、前端收不到 dead
+    setTimeout(() => dropSess(sess.id), 60);
     return onExit(0, null);
   }
 

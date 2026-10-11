@@ -783,5 +783,35 @@ console.log('\n── 12. 放大 / 还原的过场动画（不再一帧到位）
     welcome ? welcome[0] : '');
 }
 
+// ── 14. shell 会话退出 → 关掉该标签 ────────────────────────────────────
+// 一个标签 = 一个后端会话。用户在 shell 里 exit，后端收掉会话并回 dead 事件，
+// 前端据此关标签；最后一個退完要自动补新的（面板不能空着没法用）。
+// 注意与 closeTab 的区别：那是 UI 上"关掉标签"，保护最后一个；这里是"会话结束了"。
+{
+  const mood = { touch() {}, fromLocal() {}, localSignals: false };
+  const p = new ShellPanel(mood);
+  const t0 = p.tab;
+  chk('初始有一个标签', p.tabs.length === 1 && t0 === p.tab, '');
+
+  // 最后一个标签 exit：关掉后自动补一个新的
+  t0.onDead(t0);
+  chk('最后一个 exit 后仍有一个可用标签（自动补新的）', p.tabs.length === 1, String(p.tabs.length));
+  chk('补的是新标签而不是原来那个', p.tab !== t0, '');
+
+  // 多标签：关掉当前，焦点应回退到前一个
+  const t1 = p.tab;
+  p.newTab();
+  const t2 = p.tab;
+  chk('新建后有两个标签且焦点在新标签', p.tabs.length === 2 && p.tab === t2, '');
+  t2.onDead(t2);
+  chk('非最后一个 exit 后标签数减一', p.tabs.length === 1, String(p.tabs.length));
+  chk('焦点回退到剩下的那个', p.tab === t1, '');
+  chk('被关的标签已 dispose（流断掉、pty 清空）', t2.pty === null, '');
+
+  // 两种语义不能混：UI 关闭仍然保护最后一个
+  chk('closeTab 仍保护最后一个（与 exit 语义不同）',
+    p.closeTab() === false && p.tabs.length === 1, '');
+}
+
 console.log(`\n${fail === 0 ? '全部通过' : fail + ' 项失败'}`);
 process.exitCode = fail ? 1 : 0;

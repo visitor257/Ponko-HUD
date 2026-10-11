@@ -32,6 +32,7 @@ export class ShellTab {
     this._cancel = null;
     this.kind = 'pwsh';            // pwsh | cmd（由后端同步）
     this.onLine = null;            // 输出钩子（主装配拿它扫 IP 往地球上打标记）
+    this.onDead = null;            // 会话被收掉（用户在 shell 里 exit 了）→ 由面板关掉这个标签
     this.pty = null;               // {vt, off, scroll} —— 非 null 即真终端模式
     this._ptyLabel = '';           // 真终端里跑的程序名（显示用）
     this._lastCmd = '';            // 最近一条命令（用来给真终端取名字）
@@ -142,7 +143,8 @@ export class ShellTab {
     if (c === 'ponko-help') {
       this.push('info', 'Ponko-HUD 面板帮助 · 原生 help / Get-Help 未被占用，照常可用');
       this.push('info', '当前 shell：' + (this.kind === 'cmd' ? 'CMD' : 'PowerShell'));
-      this.push('info', 'cmd / powershell   切换 shell（exit 从 CMD 退回）');
+      this.push('info', 'cmd / powershell   切换 shell（CMD 下 exit 先退回 PowerShell）');
+      this.push('info', 'exit   结束本标签的 shell 并关闭该标签（最后一个会自动开个新的）');
       this.push('info', 'clear 清屏 · ESC 中断 · ↑/↓ 翻命令历史 · pty <cmd> 开真终端（任意程序都行）');
       this.push('info', '交互式程序（python / node / ssh / vim…裸跑）会自动开真终端');
       this.push('info', '真终端 = 按键直通：^C 中断 · ^D 结束输入 · ^E 退出终端');
@@ -164,6 +166,10 @@ export class ShellTab {
         this.enterPty();
         this.busy = false;
         return;
+      }
+      else if (e.t === 'dead') {           // 后端把会话收了（用户执行了 exit）：标签寿终正寝
+        this.busy = false;
+        if (this.onDead) this.onDead(this);
       }
       else if (e.t === 'exit') {
         this.busy = false;
@@ -396,6 +402,7 @@ export class ShellPanel {
     if (this.tabs.length >= MAX_TABS) return null;
     const t = new ShellTab(this.mood, this._nextId(), this.tabs.length + 1);
     t.onLine = this._onLine;
+    t.onDead = (tab) => this._onTabDead(tab);
     this.tabs.push(t);
     this.active = this.tabs.length - 1;
     this._syncRect();
@@ -418,6 +425,23 @@ export class ShellPanel {
     this.active = (this.active + (dir > 0 ? 1 : -1) + n) % n;
     this.syncFocus();
     return true;
+  }
+
+  /**
+   * 标签里的 shell 会话自己结束了（用户在里面执行了 exit）。
+   * 跟 closeTab 的语义不一样：closeTab 是 UI 上"关掉这个标签"，所以保护最后一个；
+   * 这里关的是"会话"——最后一个也没关系，关完自动补一个新的，面板不能空着没法用。
+   */
+  _onTabDead(tab) {
+    const k = this.tabs.indexOf(tab);
+    if (k < 0) return;
+    try { tab.dispose(); } catch (e) { /* 可能已经清过了 */ }
+    this.tabs.splice(k, 1);
+    if (this.tabs.length === 0) { this.newTab(); return; }   // newTab 内部会 syncFocus/_syncRect
+    if (k < this.active) this.active--;
+    if (this.active >= this.tabs.length) this.active = this.tabs.length - 1;
+    this.syncFocus();
+    this._syncRect();
   }
 
   closeTab(i) {

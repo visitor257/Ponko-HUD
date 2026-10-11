@@ -110,7 +110,30 @@ const jget = (url) => fetch(BACK + url).then((r) => r.json());
   record('/api/pty/stream 对不存在的会话给出 error 事件',
     /"t":"error"/.test(stxt) || /error/.test(stxt), stxt.slice(0, 80));
 
-  // 7) 关闭会话：真的回收（再查就是全新会话，cwd 回到起点）
+  // 7) shell 里执行 exit：会话真的结束（发 dead 事件 + 从清单里消失）
+  //    一个标签 = 一个会话，前端收到 dead 才关标签，所以这两件事必须都成立
+  await shell('z', 'cd C:\\Windows');
+  const zExit = await shell('z', 'exit');
+  record('exit 事件流里带 dead（前端据此关标签）',
+    zExit.some((e) => e.t === 'dead'), zExit.map((e) => e.t).join(','));
+  record('exit 也给一句人话提示',
+    zExit.some((e) => e.t === 'info' && /会话已结束/.test(e.text || '')),
+    (zExit.find((e) => e.t === 'info') || {}).text || '');
+  await sleep(300);                          // 后端是 60ms 后 dropSess，给它走完
+  const listAfterExit = await jget('/api/sessions');
+  record('exit 后会话被回收（清单里没有 z 了）',
+    !listAfterExit.sessions.some((s) => s.id === 'z'),
+    JSON.stringify(listAfterExit.sessions.map((s) => s.id)));
+  // CMD 模式下的 exit 是"退回 PowerShell"，不该把会话收掉——两级退出，别一次退到底
+  await shell('z2', 'cmd');
+  const z2Exit = await shell('z2', 'exit');
+  record('CMD 模式下 exit 只退回 PowerShell，不发 dead',
+    !z2Exit.some((e) => e.t === 'dead') && z2Exit.some((e) => e.t === 'shell' && e.text === 'pwsh'),
+    z2Exit.map((e) => e.t).join(','));
+  const z2State = await jget('/api/shell/state?s=z2');
+  record('CMD 模式 exit 后会话还在', z2State.shell === 'pwsh', z2State.shell);
+
+  // 8) 关闭会话：真的回收（再查就是全新会话，cwd 回到起点）
   const home = (await jget('/api/shell/state?s=b')).cwd;
   const closed = await jpost('/api/pty', { op: 'close', session: 'b' });
   record('关闭会话返回 ok', closed.ok === true, JSON.stringify(closed));
@@ -118,7 +141,7 @@ const jget = (url) => fetch(BACK + url).then((r) => r.json());
   record('关闭后是新会话（cwd 不再是被关掉那个）',
     bAfter.cwd !== home || bAfter.shell === 'pwsh', bAfter.cwd);
 
-  // 8) 会话数上限：超了要明确拒绝，而不是无限建
+  // 9) 会话数上限：超了要明确拒绝，而不是无限建
   const maxN = list.max;
   let created = 0, refused = false;
   for (let i = 0; i < maxN + 4; i++) {
