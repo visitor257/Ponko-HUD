@@ -25,24 +25,30 @@ const CH_W = { '⛶': 2, '〼': 2, '□': 1, '■': 1 };
 function mkGrid() {
   const rows = new Map();
   const sets = [];
+  const fgs = new Map();                 // 「y:x」→ 前景色（查色标颜色用）
   const g = {
     cols: 200, rows: 80,
-    rows, sets,
+    rows, sets, fgs,
+    fgAt: (x, y) => fgs.get(`${y}:${x}`),
     // 真实字体下实测的格宽（tools/_measure_sym.mjs）：几何符号区里不少字符是全角，
     // 光靠码点范围会算错（⛶ U+26F6 实测 2 格，按范围会判 1 格）→ 这里按实测值覆盖。
     chWidth: (c) => CH_W[c] ?? (c && c.charCodeAt(0) > 0x2e80 ? 2 : 1),
     strWidth(s) { let n = 0; for (const ch of s) n += g.chWidth(ch); return n; },
-    text(x, y, s) {
+    text(x, y, s, fg) {
       let col = x; const r = rows.get(y) || {};
       for (const ch of String(s)) {
         r[col] = ch;
+        if (fg !== undefined) fgs.set(`${y}:${col}`, fg);
         for (let k = 1; k < g.chWidth(ch); k++) r[col + k] = '~';
         col += g.chWidth(ch);
       }
       rows.set(y, r);
       return col;
     },
-    set(x, y, ch) { const r = rows.get(y) || {}; r[x] = ch; rows.set(y, r); sets.push({ x, y, ch }); },
+    set(x, y, ch, fg) {
+      const r = rows.get(y) || {}; r[x] = ch; rows.set(y, r); sets.push({ x, y, ch });
+      if (fg !== undefined) fgs.set(`${y}:${x}`, fg);
+    },
     box() {}, fill() {}, inBounds: () => true, idx: (x, y) => y * 200 + x,
   };
   return g;
@@ -60,7 +66,8 @@ console.log('── 1. SHELL 输入行：光标应跟着 caret 走 ──');
 
   const caretCol = (caret) => {
     s.caret = caret; g.sets.length = 0; s.draw(g, C);
-    const hit = g.sets.find((v) => v.ch === '█');
+    // 只看输入行那一行的 █：顶线右端也有标签色块（同字符）
+    const hit = g.sets.find((v) => v.ch === '█' && v.y === s.rect.y + s.rect.h - 2);
     return hit ? hit.x : -1;
   };
   const base = caretCol(0);
@@ -491,7 +498,6 @@ console.log('\n── 9. 多标签终端 ──');
     const r = g.rows.get(barRow) || {};
     return Object.keys(r).sort((a, b) => a - b).map((k) => (r[k] === '~' ? '' : r[k])).join('');
   })();
-  chk('标签栏画出了两个标签', bar.includes('1') && bar.includes('2'), JSON.stringify(bar));
   chk('标签栏有新建按钮 +', bar.includes('+'), JSON.stringify(bar));
   chk('标签栏在框顶线之上（框外）', barRow === s.rect.y - 1 && barRow === 1, barRow);
   chk('tabAt 命中标签 2', s.tabAt(s._tabHits[1].x0, barRow) === 1,
@@ -504,6 +510,46 @@ console.log('\n── 9. 多标签终端 ──');
   };
   chk('输入行仍在面板最后一行（标签栏没顶掉它）',
     textAt(s.rect.y + s.rect.h - 2).includes('>'), JSON.stringify(textAt(s.rect.y + s.rect.h - 2)));
+
+  // 认标签靠颜色而不是数字编号
+  const barMap = g.rows.get(barRow) || {};
+  chk('标签栏不再出现数字编号', !/[0-9]/.test(bar), JSON.stringify(bar));
+  chk('标签栏画出两个标签的名字', (bar.match(/pwsh|cmd/g) || []).length === 2, JSON.stringify(bar));
+  const mk = (i) => barMap[s._tabHits[i].x0];
+  chk('当前标签实心色块、其它半块', mk(0) === '█' && mk(1) === '▄', `${mk(0)}/${mk(1)}`);
+  const col0 = g.fgAt(s._tabHits[0].x0, barRow), col1 = g.fgAt(s._tabHits[1].x0, barRow);
+  chk('两个标签的色标不是一个颜色',
+    Number.isFinite(col0) && Number.isFinite(col1) && col0 !== col1, `${col0}/${col1}`);
+  chk('两个标签的颜色也真的不同', s.tabs[0].ci !== s.tabs[1].ci, `${s.tabs[0].ci}/${s.tabs[1].ci}`);
+
+  // 框顶线右端：一小排标签色块取代原来的 "1/2"
+  const topRow = g.rows.get(s.rect.y) || {};
+  const topTxt = Object.keys(topRow).sort((a, b) => a - b).map((k) => topRow[k]).join('');
+  chk('顶线右端是色标而不是数字', !/[0-9]/.test(topTxt), JSON.stringify(topTxt));
+  chk('顶线色标个数 = 标签个数', (topTxt.match(/[█▄]/g) || []).length === 2, JSON.stringify(topTxt));
+  const mkX0 = (s.rect.x + s.rect.w - 1) - 3;      // 两个标签 → need=3，色块落在 x0、x0+2
+  chk('顶线色块顺序 = 标签顺序，当前那个实心',
+    topRow[mkX0] === '█' && topRow[mkX0 + 2] === '▄', `${topRow[mkX0]}/${topRow[mkX0 + 2]}`);
+  chk('顶线色块用的是各自标签的颜色',
+    g.fgAt(mkX0, s.rect.y) === col0 && g.fgAt(mkX0 + 2, s.rect.y) === col1,
+    `${g.fgAt(mkX0, s.rect.y)}/${g.fgAt(mkX0 + 2, s.rect.y)}`);
+
+  // 关掉中间那个，剩下的颜色不能跟着重排（否则"颜色 = 那个标签"就串了）
+  const s4 = new ShellPanel({});
+  const tFirst = s4.tabs[0];
+  const ta = s4.newTab(), tb = s4.newTab(), tc = s4.newTab();
+  chk('四个标签颜色互不相同',
+    new Set([tFirst.ci, ta.ci, tb.ci, tc.ci]).size === 4, `${tFirst.ci}/${ta.ci}/${tb.ci}/${tc.ci}`);
+  s4.closeTab(s4.tabs.indexOf(tb));
+  chk('关掉中间那个，剩下的颜色不变（不看位置）',
+    s4.tabs.map((t) => t.ci).join(',') === [tFirst.ci, ta.ci, tc.ci].join(','),
+    s4.tabs.map((t) => t.ci).join(','));
+  // 取色是"按轮子往下走"而不是马上回填刚释放的那个：否则新标签用上一个刚关掉的颜色，
+  // 看着就像那个标签又回来了 —— 而这恰恰是颜色代替编号后最容易产生的错觉
+  const tNew = s4.newTab();
+  chk('新标签不套用刚释放的颜色（免得看成那个标签回来了）', tNew.ci !== tb.ci, `${tNew.ci} vs ${tb.ci}`);
+  chk('颜色在标签之间始终不重复', new Set(s4.tabs.map((t) => t.ci)).size === s4.tabs.length,
+    s4.tabs.map((t) => t.ci).join(','));
 
   // focus / onLine 要覆盖所有标签（含之后新建的）
   const s2 = new ShellPanel({});

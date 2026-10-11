@@ -9,18 +9,32 @@
 // 多标签（对齐 eDEX-UI 的终端标签）：ShellTab = 一个标签的全部状态，ShellPanel = 标签栏 +
 // 当前标签。每个标签在后端是一个独立的会话（自己的持久 pwsh、cwd、shell 种类、PTY），
 // 后台标签的 PTY 流也不退订 —— 切回来屏幕内容、滚屏位置都还在。
-import { ATTR } from '../grid.js';
+import { ATTR, rgb, mix } from '../grid.js';
 import { runShell, abortShell, ptyWrite, ptyResize, ptyStop, ptyClose, ptyStream, shellState } from '../api.js';
 import { VT, cellColor } from '../vt.js';
 
 const MAX_TABS = 8;
 
+// 标签识别不用数字编号，用颜色：每个标签拿到一个当前没人占用的色，画成标签栏的色标
+// 与 SHELL 顶线上的小方块。同一时刻最多 MAX_TABS 个，颜色刚好够分。
+// 色相均匀铺开、彼此一眼能分；默认派到蓝色（先别撞主题青），青色排在后面备用
+const TAB_COLORS = [
+  rgb(96, 168, 255),    // 蓝
+  rgb(248, 196, 96),    // 金
+  rgb(126, 224, 152),   // 薄荷
+  rgb(248, 146, 200),   // 粉
+  rgb(198, 140, 252),   // 紫
+  rgb(78, 214, 208),    // 青（跟主题色最近，排后面）
+  rgb(248, 148, 96),    // 橙
+  rgb(190, 226, 104),   // 黄绿
+];
+
 // ── 一个标签：所有状态都在实例上，标签之间互不共享 ────────────────────────
 export class ShellTab {
-  constructor(mood, id, n) {
+  constructor(mood, id, ci) {
     this.mood = mood;
     this.id = id;              // 后端会话 id（也是 /api/shell、/api/pty 的 session）
-    this.n = n;                // 标签序号（只用于显示）
+    this.ci = ci;              // 色标下标 —— 这个标签的"身份色"，替代原来的数字编号
     this.lines = [];           // {kind:'cmd'|'out'|'err'|'info', text}
     this.cwd = 'C:\\';
     this.busy = false;
@@ -52,6 +66,9 @@ export class ShellTab {
       if (s && s.shell) this.kind = s.shell || 'pwsh';
     }).catch(() => { /* 后端没起来就先用默认 C:\，不影响功能 */ });
   }
+
+  /** 本标签的颜色（标签栏色标、顶线小方块都用它认标签） */
+  color() { return TAB_COLORS[this.ci % TAB_COLORS.length]; }
 
   /** 标签栏上的名字：真终端就显示程序名 */
   title() {
@@ -149,6 +166,7 @@ export class ShellTab {
       this.push('info', '交互式程序（python / node / ssh / vim…裸跑）会自动开真终端');
       this.push('info', '真终端 = 按键直通：^C 中断 · ^D 结束输入 · ^E 退出终端');
       this.push('info', '多标签：^⇧T 新建 · ^Tab 切换 · ^⇧W 关闭（各标签互相独立）');
+      this.push('info', '         每个标签一个颜色（标签栏 / SHELL 右上角各一块），认颜色不认编号');
       return;
     }
     this.busy = true;
@@ -339,6 +357,7 @@ export class ShellPanel {
     this._onLine = null;
     this._tabHits = [];        // 最近一帧标签栏的命中区 [{x0,x1,idx}]，idx=-1 是“+”
     this._seq = 0;
+    this._colorSeq = 0;        // 下一个要派的色（轮转，但先跳过正在用的）
     this.newTab();
     this._reapStale();
   }
@@ -397,10 +416,24 @@ export class ShellPanel {
   onWheel(d) { return this.tab ? this.tab.onWheel(d) : false; }
   push(kind, text) { if (this.tab) this.tab.push(kind, text); }
 
+  /**
+   * 取一个当前没人用的颜色（全占满才复用）。
+   * 关键是"不按位置分配"：关掉中间某个标签时，剩下的颜色不会跟着重排，
+   * 否则"那个颜色 = 那个标签"的对应关系就断了，刚建立起的肌肉记忆也废了。
+   */
+  _pickColor() {
+    const used = new Set(this.tabs.map((t) => t.ci));
+    for (let k = 0; k < TAB_COLORS.length; k++) {
+      const ci = (this._colorSeq + k) % TAB_COLORS.length;
+      if (!used.has(ci)) { this._colorSeq = (ci + 1) % TAB_COLORS.length; return ci; }
+    }
+    return this._colorSeq++ % TAB_COLORS.length;
+  }
+
   // ── 标签管理 ──
   newTab() {
     if (this.tabs.length >= MAX_TABS) return null;
-    const t = new ShellTab(this.mood, this._nextId(), this.tabs.length + 1);
+    const t = new ShellTab(this.mood, this._nextId(), this._pickColor());
     t.onLine = this._onLine;
     t.onDead = (tab) => this._onTabDead(tab);
     this.tabs.push(t);
@@ -480,10 +513,32 @@ export class ShellPanel {
   draw(g, C) {
     const r = this.rect, T = C.theme;
     if (!r || r.w < 12 || r.h < 4) return;
-    g.box(r.x, r.y, r.w, r.h, this._focus ? T.accent : T.line, T.panel,
-      'SHELL', T.accent, `${this.active + 1}/${this.tabs.length}`);
+    g.box(r.x, r.y, r.w, r.h, this._focus ? T.accent : T.line, T.panel, 'SHELL', T.accent);
+    this._drawTabMarks(g, C, r);
     const tab = this.tab;
     if (tab) { tab.rect = { x: r.x, y: r.y, w: r.w, h: r.h }; tab.focus = this._focus; tab.body(g, C); }
+  }
+
+  /**
+   * 框顶线右端：每个标签一个属于自己的小方块（当前那个点亮成实心），
+   * 取代原先的 "2/3" 数字编号 —— 认标签靠颜色，"是第几个"本来就没意义。
+   */
+  _drawTabMarks(g, C, r) {
+    const T = C.theme, n = this.tabs.length;
+    if (n < 1) return;
+    const need = n * 2 - 1;                      // 方块之间空一格
+    const x0 = (r.x + r.w - 1) - need;           // 右端对齐，最右一列留给 '┐'
+    const titleEnd = r.x + 2 + g.strWidth('SHELL');
+    if (x0 <= titleEnd + 1) return;              // 框太窄就别画了，不能压到标题
+    for (let i = 0; i < n; i++) {
+      const on = i === this.active;
+      const x = x0 + i * 2;
+      const col = this.tabs[i].color();
+      // 颜色就是身份，别再压暗：只要实心/半块就能分出是不是当前标签，
+      // 压暗反而让它跟标签栏上的色标对不上号
+      g.set(x, r.y, on ? '█' : '▄', col, T.panel);
+      if (i < n - 1) g.set(x + 1, r.y, ' ', T.accent, T.panel);
+    }
   }
 
   /**
@@ -499,12 +554,18 @@ export class ShellPanel {
     const maxX = r.x + r.w;                      // 独占：[r.x, r.x+r.w)
     let x = r.x;
     for (let i = 0; i < this.tabs.length; i++) {
-      const label = ` ${i + 1} ${this.tabs[i].title()} `;
-      const w = g.strWidth(label);
+      const t = this.tabs[i];
+      const name = t.title();
+      const w = 2 + g.strWidth(name) + 1;        // 色标 + 空格 + 名字 + 空格
       if (x + w > maxX - 3) { g.text(x, y, '…', T.darker, T.bg); x += 1; break; }
       const on = i === this.active;
-      // 活动标签用实心色块（反色），“挂在”顶线上；非活动做成低调的小片
-      g.text(x, y, label, on ? T.bg : T.dim, on ? T.accent : T.panel);
+      const col = t.color();
+      // 当前标签：淡染一层自己的颜色当底；其余保持面板底色，只靠色标/字色区分
+      const bg = on ? mix(T.panel, col, 0.16) : T.panel;
+      for (let k = 0; k < w; k++) g.set(x + k, y, ' ', T.dim, bg);
+      // 色标实心 = 当前；半块 = 后台。形状 + 颜色两条通道，都不用数数
+      g.set(x, y, on ? '█' : '▄', col, bg);
+      g.text(x + 2, y, name, on ? col : T.dim, bg, on ? ATTR.BOLD : 0);
       this._tabHits.push({ x0: x, x1: x + w - 1, idx: i });
       x += w;
     }

@@ -452,7 +452,13 @@ function afterTabChange() {
   hidden.value = panels.shell.input || '';
   syncHidden();
   const s = panels.shell;
-  selToast = { text: `终端标签 ${s.active + 1}/${s.tabs.length}`, until: performance.now() + 1200 };
+  // 标签认颜色不认编号，切换提示也就跟着说名字：只有 pwsh/cmd/程序名不够分时，
+  // 眼睛认的是颜色而不是"第几个"
+  const t = s.tab;
+  selToast = {
+    text: t ? `终端 · ${t.title()} · 共 ${s.tabs.length} 个标签` : '终端',
+    until: performance.now() + 1200,
+  };
 }
 window.addEventListener('keydown', (e) => {
   if (!e.ctrlKey || e.altKey || e.metaKey) return;
