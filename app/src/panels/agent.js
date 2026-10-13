@@ -10,6 +10,7 @@
 // 原样恢复（包括内容）。
 import { ATTR, mix } from '../grid.js';
 import { TAB_COLORS } from '../tabcolors.js';
+import { t } from '../i18n/index.js';
 import {
   askAgent, getLlmConfig, saveLlmConfig, testLlmConfig,
   listConvs, getConv, saveConv, deleteConv,
@@ -20,6 +21,26 @@ const MAX_CTX_MSGS = 20;
 const MAX_CONVS = TAB_COLORS.length;   // 对话标签上限 = 色板容量（每个对话一个独有色）
 const SAVE_DEBOUNCE = 800;             // 落盘防抖：流式期间每条事件都写盘就太吵了
 const TITLE_MAX = 12;                  // 标签栏标题最多占几列
+const HDR_GAP = 2;                     // 框顶线右端：色标与右上角状态字之间空几列（贴着会看成一坨）
+const HDR_MIN = 6;                     // 状态字再挤也至少给这么多列（否则截得没法认）
+
+/**
+ * 按**显示宽度**截到 max 列（中文算 2 列），放不下就砍掉尾巴换成 '…'。
+ * 模型 id 是 ASCII，但别假设 —— 万一是中文别名也得算对宽度。
+ */
+function clipCols(g, s, max) {
+  const str = String(s === undefined || s === null ? '' : s);
+  if (max <= 0) return '';
+  if (g.strWidth(str) <= max) return str;
+  if (max === 1) return '…';
+  let out = '', w = 0;
+  for (const ch of str) {
+    const cw = g.strWidth(ch);
+    if (w + cw > max - 1) break;
+    out += ch; w += cw;
+  }
+  return out + '…';
+}
 
 // ── 一个对话：所有状态都在实例上，对话之间互不共享 ──────────────────────
 export class AgentConv {
@@ -45,11 +66,11 @@ export class AgentConv {
   /** 本对话的颜色（标签栏色标、面板顶线小方块都用它认标签） */
   color() { return TAB_COLORS[this.ci % TAB_COLORS.length]; }
 
-  /** 标签栏上的名字：存档标题 → 第一条用户消息 → 「新对话」 */
+  /** 标签栏上的名字：存档标题 → 第一条用户消息 → 「新对话」（空对话时那个占位名走语言包） */
   title() {
     if (this._title) return clampTitle(this._title);
     const first = this.msgs.find((m) => m.role === 'user' && m.text.trim());
-    return first ? clampTitle(first.text) : '新对话';
+    return first ? clampTitle(first.text) : t('ui.agent.newConv');
   }
 
   /** 关标签时调用：中止在飞的请求，别再往上写 */
@@ -124,10 +145,27 @@ export class AgentConv {
     return L.start + i;
   }
 
+  /** 正文/程序输出/agent 的话 —— 都是**内容**，不翻 */
   push(role, text) {
     this.msgs.push({ role, text: String(text === undefined || text === null ? '' : text), t: performance.now() });
     if (this.msgs.length > 300) this.msgs.splice(0, this.msgs.length - 300);
     if (this.onDirty) this.onDirty(this);
+  }
+
+  /**
+   * 记一条**界面文案**（错误话术、状态提示这类）：存 key + 参数，切语言时能重译。
+   * 与 shell 的 pushT 同一思路 —— 存成品句子的话，老消息会留在旧语言里，屏幕上一半中一半英。
+   * （落盘时这两个字段会被剥掉，见 flushSaves：存档格式不变。）
+   */
+  pushT(role, key, args) {
+    this.msgs.push({ role, text: t(key, args), k: key, a: args, t: performance.now() });
+    if (this.msgs.length > 300) this.msgs.splice(0, this.msgs.length - 300);
+    if (this.onDirty) this.onDirty(this);
+  }
+
+  /** 语言变了：把带 key 的消息重译一遍（用户/agent 的正文没有 key，原样不动） */
+  retranslate() {
+    for (const m of this.msgs) if (m.k) m.text = t(m.k, m.a);
   }
 
   /** 把 agent 的心情控制语句记进对话流（开关关掉就不记，协议本身照常生效） */
@@ -199,8 +237,8 @@ export class AgentConv {
         }
         case 'error':
           this.busy = false;
-          this.push('think', '后端错误：' + e.text);
-          if (this.mood && this.mood.fromLocal) this.mood.fromLocal('error', '连不上 agent 后端');   // 标清是本地兜底
+          this.pushT('think', 'ui.agent.backendError', { msg: e.text });
+          if (this.mood && this.mood.fromLocal) this.mood.fromLocal('error', 'ui.agent.noBackend');   // 标清是本地兜底
           break;
       }
       this.scroll = 0;
@@ -214,7 +252,7 @@ export class AgentConv {
     if (!this.busy) return;
     try { this._cancel && this._cancel(); } catch (e) {}
     this.busy = false;
-    this.push('think', '已中断');
+    this.pushT('think', 'ui.agent.aborted');
   }
 
   onWheel(d) { this.scroll = Math.max(0, Math.min(400, this.scroll + (d > 0 ? -1 : 1))); return true; }
@@ -279,7 +317,7 @@ export class AgentConv {
       if (!this.input) {
         // 空输入：占位提示（暗色），按可用宽度截断
         let s = '', wsum = 0;
-        for (const ch of '输入内容...（Ctrl+回车发送）') {
+        for (const ch of t('ui.agent.placeholder')) {
           const cw = g.chWidth(ch);
           if (wsum + cw > win.avail) break;
           s += ch; wsum += cw;
@@ -298,7 +336,7 @@ export class AgentConv {
     // 状态条
     const sy = r.y + r.h - 2;
     g.text(x, sy, '╌'.repeat(iw), T.line);
-    const st = this.busy ? `流式输出中 · ${C.tokRate || 0} tok/s` : '待机';
+    const st = this.busy ? t('ui.agent.streaming', { rate: C.tokRate || 0 }) : t('ui.agent.idle');
     g.text(x, sy, ` ${st}`, this.busy ? T.accent : T.dim, T.panel);
     const right = `tokens ${this.tokens}  ¥0.00`;
     g.text(Math.max(0, r.x + r.w - 1 - g.strWidth(right)), sy, right, T.dim, T.panel);
@@ -320,50 +358,59 @@ export class AgentPanel {
     this._dirty = new Set();     // 待落盘的对话
     this._saveTimer = null;
     this.llmConfigured = false;  // 后端是否配好了真 LLM
+    this.llmModel = '';          // 接的是哪个模型（框顶右上角显示它，不写死一个 "llm"）
     this.inConfig = false;       // 是否正在显示配置框（面板级：LLM 配置跟哪个对话无关）
     this._cfg = null;
     this._cfgIdx = null;
     this._clearHidden = null;    // main.js 注入：关闭配置框时清空隐藏输入框
+    this.onConvClosed = null;    // main.js 注入：/del chat 关掉/换掉对话之后，主装配要跟着收拾
+    this.onDelAsk = null;        // main.js 注入：/del chat 命中时先弹那道红条确认（不直接删）
+    // 字段名 / 候选项名都存**语言包 key**（`labelKey` / opts 第二项），绘制时现取现翻 ——
+    // 存成品文案的话，配置框开着的时候切语言它不会跟着变。labelKey 只给显示用，值本身是数据。
     this.form = {
       fields: [
-        { key: 'baseUrl', label: 'API地址', value: '', ph: 'https://api.openai.com/v1', mask: false },
-        { key: 'apiKey', label: 'API Key', value: '', ph: 'sk-...', mask: true },
-        { key: 'model', label: '模型名', value: '', ph: 'gpt-3.5-turbo', mask: false },
+        { key: 'baseUrl', labelKey: 'ui.agent.field.apiAddr', value: '', ph: 'https://api.openai.com/v1', mask: false },
+        { key: 'apiKey', labelKey: 'ui.agent.field.apiKey', value: '', ph: 'sk-...', mask: true },
+        { key: 'model', labelKey: 'ui.agent.field.model', value: '', ph: 'gpt-3.5-turbo', mask: false },
         // 循环选择字段（←→ 切换，不接受文本输入）：
         // auto=两种协议各试一次谁通用谁；openai/anthropic=手动指定，跳过识别
         {
-          key: 'provider', label: '协议', value: 'auto', mask: false, cycle: true,
-          opts: [['auto', '自动识别'], ['openai', 'OpenAI 兼容'], ['anthropic', 'Anthropic']],
+          key: 'provider', labelKey: 'ui.agent.field.provider', value: 'auto', mask: false, cycle: true,
+          opts: [['auto', 'ui.agent.opt.auto'], ['openai', 'ui.agent.opt.openai'], ['anthropic', 'ui.agent.opt.anthropic']],
         },
         // 心情控制语句 [[mood:...]] 是否原样显示在对话里（默认隐藏：多数时候只看正文；
         // 想确认 agent 给自己下了什么指令时再打开）。它只影响显示，不影响协议本身 ——
         // 隐藏是**整行不渲染**，不是把文字抹成空白（那会留下一条空行）。
         {
-          key: 'moodTags', label: '心情语句', value: 'hide', mask: false, cycle: true,
-          opts: [['show', '显示'], ['hide', '隐藏']],
+          key: 'moodTags', labelKey: 'ui.agent.field.moodTags', value: 'hide', mask: false, cycle: true,
+          opts: [['show', 'ui.agent.opt.show'], ['hide', 'ui.agent.opt.hide']],
         },
       ],
       idx: -1,                 // -1 未编辑；0..3 字段；4 保存；5 取消
       caret: 0,                // 当前字段里的光标位置（字符索引）
-      msg: '',
+      msgKey: '',              // 状态行存的是 key + 参数（现取现翻，见 setMsg）
+      msgArgs: null,
       busy: false,
     };
     // 心情语句显示开关：本地偏好，不进 LLM 配置（跟后端无关），存 localStorage
     this.showMoodTags = readMoodPref();
     this.form.fields[4].value = this.showMoodTags ? 'show' : 'hide';
     this.newTab();
-    this.tab.push('agent', '已就绪。左边敲 shell 命令，这儿直接跟我说话。');
+    this.tab.pushT('agent', 'ui.agent.ready');
     // 启动即拉一次后端配置：没配过就自动弹配置框
     getLlmConfig().then((s) => {
       if (!s) return;
       this.llmConfigured = !!s.configured;
       this._syncLlm();
       if (s.baseUrl) this.form.fields[0].value = s.baseUrl;
-      if (s.model) this.form.fields[2].value = s.model;
+      if (s.model) { this.llmModel = s.model; this.form.fields[2].value = s.model; }
       if (s.provider) this.form.fields[3].value = normProvider(s.provider);
       if (!this.llmConfigured) this.configOpen();
     }).catch(() => { this.configOpen(); });
   }
+
+  /** 状态行文案：存 key + 参数，绘制时现取现翻（配置框开着时切语言也能跟着变） */
+  setMsg(key, args) { this.form.msgKey = key || ''; this.form.msgArgs = args || null; }
 
   /** 把"接没接 LLM"同步给每个对话（对话自己不知道后端配置） */
   _syncLlm() { for (const t of this.tabs) t.llmOk = this._llmOk; }
@@ -402,7 +449,15 @@ export class AgentPanel {
   inputWindow(g) { return this.tab ? this.tab.inputWindow(g) : null; }
   caretFromPoint(g, cx, cy) { return this.tab ? this.tab.caretFromPoint(g, cx, cy) : null; }
   push(role, text) { if (this.tab) this.tab.push(role, text); }
-  send(text) { return this.tab ? this.tab.send(text) : undefined; }
+  pushT(role, key, args) { if (this.tab) this.tab.pushT(role, key, args); }
+  /** 语言变了：**所有**对话（含后台标签）里的界面消息都要重译 */
+  retranslate() { for (const conv of this.tabs) conv.retranslate(); }
+  // 先过斜杠命令 —— 必须在 tab.send 之前：那儿有"没接 LLM 就弹配置框""正在流式就不收"
+  // 两道闸，而删对话跟这两件事都没关系（流式中的对话也应该删得掉）。
+  send(text) {
+    if (this.command(text)) return true;               // 命中命令：不发给模型、不进上下文
+    return this.tab ? this.tab.send(text) : undefined;
+  }
   abort() { if (this.tab) this.tab.abort(); }
   noteMood(e) { return this.tab ? this.tab.noteMood(e) : false; }
   onArrow(dir) { return this.tab ? this.tab.onArrow(dir) : true; }
@@ -463,8 +518,10 @@ export class AgentPanel {
 
   /**
    * 关掉一个对话标签。留最后一个（面板不能空着没法用）。
-   * 存档一并删除 —— 但调用方（main.js）必须**先弹一行确认**再调它，
-   * 关错了可没有回收站可找。
+   * 存档一并删除 —— 关错了可没有回收站可找，所以**入口都先弹一行红条**（main.js），
+   * 在红条上回车才走到这儿。入口只有一个：输入框里打 /del chat（见 command）——
+   * 原来那条 ^⇧W 键位 2026-10-13 按用户要求删掉了。
+   * 也就是说这个函数是"执行器"，不做确认 —— 确认在 main.js 的 convClose 那一套里。
    */
   closeTab(i) {
     if (this.tabs.length <= 1) return false;
@@ -482,6 +539,55 @@ export class AgentPanel {
     return true;
   }
 
+  // ── 斜杠命令 ──────────────────────────────────────────────────
+  /**
+   * 在输入框里打一条命令、Ctrl+Enter 发出去。目前只有 /del chat（关掉当前对话）。
+   * 两个入口都过这里：聊天输入框（AgentPanel.send）和没接 LLM 时盖住面板的配置表单
+   * （configEnter → 字段里打着同一句话）。
+   *
+   * 为什么用打字而不是快捷键：不用记键位，也说得出"我要删哪一个"。
+   * 但**打出命令不等于立刻删** —— 这里只把请求交出去（onDelAsk），由 main.js 弹那道红条，
+   * 在红条上回车才真删。删的是磁盘上的存档、没有回收站，多一次回车只花时间不花判断力。
+   *
+   * 只认「整条输入恰好是命令」：带别的字（`/del chat 吧`）、认不出的命令（`/foo`）
+   * 一律当普通正文交给模型 —— 绝不能吞用户的话。
+   */
+  command(text) {
+    const s = String(text === undefined || text === null ? '' : text).trim();
+    if (!s.startsWith('/')) return false;
+    const [name, ...args] = s.slice(1).split(/\s+/).map((x) => x.toLowerCase());
+    if (name === 'del' && args.length === 1 && args[0] === 'chat') {
+      // 没有装配钩子（理论上不会）时**什么都不做**：删存档这种事不能有"静默兜底"，
+      // 宁可这条命令看起来没反应，也不能在没有确认的情况下把对话删掉。
+      if (this.onDelAsk) this.onDelAsk();
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * /del chat 的执行步骤：关掉当前对话（连存档一起删）。**只由确认之后调用**
+   * （main.js 的 confirmConvClose），命令解析本身不碰它。
+   * 只剩一个时关不掉 —— 面板没有"零个对话"这个状态；那就**先开一个新的再关旧的**，
+   * 结果一样（旧内容连同存档一起没了），面板还能继续用。
+   */
+  delChat() {
+    const t = this.tab;
+    if (!t) return false;
+    const label = t.title();
+    if (this.tabs.length <= 1) {
+      const fresh = this.newTab();                     // 先建后删：任何一帧都至少有一个对话
+      if (!fresh) return false;                        // 真到上限（8 个）才可能失败
+      this.closeTab(0);                                // 关掉那个旧的（存档也删）
+      fresh.pushT('info', 'ui.agent.cleared');
+      if (this.onConvClosed) this.onConvClosed(label, 'replaced');
+      return true;
+    }
+    if (!this.closeTab()) return false;
+    if (this.onConvClosed) this.onConvClosed(label, 'closed');
+    return true;
+  }
+
   // ── 落盘 ──────────────────────────────────────────────────────
   _markDirty(t) {
     if (!t || !t.id) return;
@@ -495,8 +601,13 @@ export class AgentPanel {
     if (!this._dirty.size) return;
     const todo = [...this._dirty];
     this._dirty.clear();
-    for (const t of todo) {
-      try { saveConv({ id: t.id, title: t.title(), msgs: t.msgs }); } catch (e) { /* 后端没起来就算了 */ }
+    for (const conv of todo) {
+      try {
+        // 存盘时把 k / a（i18n 的 key + 参数）剥掉 —— 存档格式跟以前完全一样，
+        // 语言包换了以后旧存档也能正常读（读回来就只剩 text，按当时那句显示）。
+        const msgs = conv.msgs.map(({ k, a, ...rest }) => rest);
+        saveConv({ id: conv.id, title: conv.title(), msgs });
+      } catch (e) { /* 后端没起来就算了 */ }
     }
   }
 
@@ -539,13 +650,13 @@ export class AgentPanel {
     this.inConfig = true;
     this.form.idx = 0;
     this.form.bad = false;
-    this.form.msg = '填地址 / Key / 模型后回车保存（会先验证连通）';
+    this.setMsg('ui.agent.form.hint');
     if (this._clearHidden) this._clearHidden();   // 清空可能残留的聊天输入框文本
   }
   configClose() {
     this.inConfig = false;
     this.form.idx = -1;
-    this.form.msg = '';
+    this.setMsg('');
     if (this._clearHidden) this._clearHidden();   // 清掉残留的字段文本，免得污染聊天输入框
   }
   configNav(dir) {
@@ -593,12 +704,22 @@ export class AgentPanel {
   }
   configEnter() {
     const b = this.form.fields.length;
-    if (this.form.idx >= 0 && this.form.idx < b) {
+    // 没接 LLM 时这张表单会盖住对话区，键盘其实是落在字段上的（输入框就是字段本身）——
+    // 那种状态下也得删得掉不想要的对话，否则"打 /del chat 就能删"这条规矩就成了有时灵有时不灵。
+    // 命中了就把字段让出来：那是 API 地址/Key 的位置，不能留一行命令在里头。
+    const i = this.form.idx;
+    if (i >= 0 && i < b && this.command(this.form.fields[i].value)) {
+      this.form.fields[i].value = '';
+      this.form.caret = 0;
+      if (this._clearHidden) this._clearHidden();   // syncCfgHidden 刚才可能又把它填回去了
+      return;
+    }
+    if (i >= 0 && i < b) {
       // 字段上回车：最后一个字段→跳到保存按钮，否则下一个字段
-      this.form.idx = (this.form.idx === b - 1) ? b : this.form.idx + 1;
-    } else if (this.form.idx === b) {
+      this.form.idx = (i === b - 1) ? b : i + 1;
+    } else if (i === b) {
       this.configSave();
-    } else if (this.form.idx === b + 1) {
+    } else if (i === b + 1) {
       if (this.llmConfigured) this.configClose();
     }
   }
@@ -615,42 +736,44 @@ export class AgentPanel {
       model: get('model'),
       provider: normProvider(get('provider')),
     };
-    if (!body.baseUrl || !body.apiKey) { this.form.bad = true; this.form.msg = '地址和 Key 都不能为空'; return; }
+    if (!body.baseUrl || !body.apiKey) { this.form.bad = true; this.setMsg('ui.agent.form.needBoth'); return; }
 
     this.form.busy = true;
     this.form.bad = false;
-    this.form.msg = '正在验证连接…';
-    let t;
-    try { t = await testLlmConfig(body); } catch (e) { t = { ok: false, error: String(e.message) }; }
+    this.setMsg('ui.agent.form.testing');
+    // 变量名不能叫 t —— 那是 i18n 的取词函数（本文件顶部 import 的），撞名后 t('ui...') 就炸了
+    let res;
+    try { res = await testLlmConfig(body); } catch (e) { res = { ok: false, error: String(e.message) }; }
 
-    if (!t || !t.ok) {
+    if (!res || !res.ok) {
       // 验证失败：保留原输入框内容让用户改，已有配置（若之前配通过）不受影响
       this.form.busy = false;
       this.form.bad = true;
-      this.form.msg = '连接失败：' + ((t && t.error) || '未知错误');
+      this.setMsg('ui.agent.form.testFail', { err: (res && res.error) || t('ui.shell.unknownError') });
       return;
     }
 
     try {
       // 自动识别成功时把认出来的协议一起存下来，之后对话就不用再猜
-      if (t && t.provider) body.resolved = t.provider;
+      if (res.provider) body.resolved = res.provider;
       const r = await saveLlmConfig(body);
       this.llmConfigured = !!(r && r.configured);
       this._syncLlm();
       if (this.llmConfigured) {
         if (r.baseUrl) this.form.fields[0].value = r.baseUrl;
-        if (r.model) this.form.fields[2].value = r.model;
+        if (r.model) { this.llmModel = r.model; this.form.fields[2].value = r.model; }
         this.form.busy = false;
         this.form.bad = false;
-        const via = t.via === 'models' ? ' · 模型已核对' : '';
-        const pname = t.provider ? ` · ${providerLabel(t.provider)}` : '';
-        this.form.msg = `验证通过（${t.ms}ms${via}${pname}）✓ 已保存`;
+        // via / pname 是**片段**：由各自的语言包拼进整句（别的语言语序不同，不能按片段硬拼）
+        const via = res.via === 'models' ? t('ui.agent.form.modelChecked') : '';
+        const pname = res.provider ? ` · ${providerLabel(res.provider)}` : '';
+        this.setMsg('ui.agent.verifyOk', { ms: res.ms, via, pname });
         setTimeout(() => {
           this.configClose();
-          this.push('info', `已接入 LLM（${r.model || ''}），直接跟我说吧。`);
+          this.pushT('info', 'ui.agent.llmOn', { model: r.model || '' });
         }, 900);
-      } else { this.form.busy = false; this.form.bad = true; this.form.msg = '保存失败：缺少字段'; }
-    } catch (e) { this.form.busy = false; this.form.bad = true; this.form.msg = '保存出错：' + e.message; }
+      } else { this.form.busy = false; this.form.bad = true; this.setMsg('ui.agent.form.saveFail'); }
+    } catch (e) { this.form.busy = false; this.form.bad = true; this.setMsg('ui.agent.form.saveError', { err: e.message }); }
   }
 
   // 鼠标点击配置框：命中字段→聚焦该字段；命中保存/取消→执行对应动作
@@ -678,7 +801,7 @@ export class AgentPanel {
     if (c.y === h.save.y && c.x >= h.save.x0 && c.x < h.save.x1) { this.configSave(); return true; }
     if (c.y === h.cancel.y && c.x >= h.cancel.x0 && c.x < h.cancel.x1) {
       if (this.llmConfigured) this.configClose();
-      else this.form.msg = '未配置时不能取消';
+      else this.setMsg('ui.agent.form.cantCancel');
       return true;
     }
     return false;
@@ -708,8 +831,7 @@ export class AgentPanel {
   draw(g, C) {
     const r = this.rect, T = C.theme;
     if (!r || r.w < 10 || r.h < 5) return;
-    const busy = this.tab ? this.tab.busy : false;
-    this._hdr = !this.llmConfigured ? '未接LLM' : (busy ? 'streaming' : 'llm');
+    this._hdr = this._hdrText(g);
     g.box(r.x, r.y, r.w, r.h, this._focus ? T.accent : T.line, T.panel, 'AGENT', T.accent, this._hdr);
     this._drawTabMarks(g, C, r);
     if (this.inConfig) { this.drawConfig(g, C); return; }   // 配置框盖住对话区
@@ -718,19 +840,40 @@ export class AgentPanel {
   }
 
   /**
+   * 框顶右上角显示什么：**接上就显示真在用的模型 id**（从后端配置读回来的，不是写死的 "llm"）。
+   * 流式输出中不再换成 "streaming" —— 底部状态行本来就在报「流式输出中 · N tok/s」，
+   * 右上角那点地方留给"到底在跟谁说话"更有用。
+   * 宽度按"标题 + 色标 + 间隔"剩下的算，放不下就截断。
+   */
+  _hdrText(g) {
+    if (!this.llmConfigured) return t('ui.agent.status.off');
+    const m = String(this.llmModel || '').trim();
+    if (!m) return t('ui.agent.status.on');     // 配好了但后端没给模型名（不该发生，别显示空白）
+    const r = this.rect;
+    const need = this.tabs.length ? this.tabs.length * 2 - 1 : 0;
+    // 标题 'AGENT' 占 5 列 + 与状态字之间至少 1 列 + 右侧边框前后各 1 列
+    const avail = r.w - 10 - need - HDR_GAP;
+    return clipCols(g, m, Math.max(HDR_MIN, avail));
+  }
+
+  /**
    * 框顶线右端：每个对话一个属于自己的小方块（当前那个点亮成实心），
    * 取代数字编号 —— 认对话靠颜色，"是第几个"本来就没意义。
-   * 注意要往左让出 hdr（'llm' / 'streaming' / '未接LLM'），别跟它撞上。
+   * 要往左让出状态字（模型 id），并且**中间空 HDR_GAP 列**：色块是有颜色的方块，
+   * 跟文字贴在一起会被看成一坨。
    */
   _drawTabMarks(g, C, r) {
     const T = C.theme, n = this.tabs.length;
+    this._marksX0 = null;                        // 端到端/回归要看色块到底落在哪一列
     if (n < 1) return;
     const need = n * 2 - 1;                      // 方块之间空一格
     const rw = this._hdr ? g.strWidth(this._hdr) : 0;
-    const x0 = (r.x + r.w - 1) - (rw ? rw + 1 : 0) - need;
-    const titleEnd = r.x + 2 + g.strWidth('AGENT');
-    const hdrStart = (r.x + r.w - 1) - rw;
-    if (x0 <= titleEnd + 1 || x0 + need > hdrStart - 1) return;   // 太窄就别画，不能压到标题/状态
+    const hdrStart = (r.x + r.w - 1) - 1 - rw;   // 状态字第一列（box() 里 right 就画在这儿）
+    const x0 = hdrStart - (rw ? HDR_GAP : 0) - need;
+    const titleEnd = r.x + 2 + g.strWidth('AGENT');   // 标题占的最后一列
+    // 太窄就不画：色块既不能压到标题（至少空一列），也不能碰到状态字
+    if (x0 <= titleEnd || x0 + need > hdrStart - 1) return;
+    this._marksX0 = x0;
     for (let i = 0; i < n; i++) {
       const on = i === this.active;
       const x = x0 + i * 2;
@@ -786,13 +929,13 @@ export class AgentPanel {
 
     const cx = r.x + Math.floor((r.w - 2) / 2);
     const midY = r.y + Math.floor((r.h - 1) / 2);
-    const title = '⚙ 接入 LLM';
-    g.text(cx - Math.floor(title.length / 2), midY - 6, title, T.accent, T.panel);
+    const title = t('ui.agent.formTitle');
+    g.text(cx - Math.floor(g.strWidth(title) / 2), midY - 6, title, T.accent, T.panel);
     g.text(x + 2, midY - 5, '─'.repeat(Math.max(0, iw - 4)), T.line, T.panel);
 
     const f = this.form.fields;
     // 标签列宽取最长标签（'心情语句' 比 '协议' 宽），箭头与输入框才不会各歪一列
-    const labelW = Math.max(1, ...f.map((x) => g.strWidth(x.label)));
+    const labelW = Math.max(1, ...f.map((x) => g.strWidth(t(x.labelKey))));
     const rowHits = [];
     for (let k = 0; k < f.length; k++) {
       const field = f[k];
@@ -804,7 +947,7 @@ export class AgentPanel {
         // 箭头始终画出来（未选中也画，用暗色），否则用户看不出这两个字符是可点的
         const wOf = (s) => [...s].reduce((n, ch) => n + g.chWidth(ch), 0);
         // 按最长候选名占列：切换时 › 的位置要恒定，否则鼠标点一次就得换个地方点
-        const maxW = Math.max(1, ...(field.opts || []).map((o) => wOf(o[1])));
+        const maxW = Math.max(1, ...(field.opts || []).map((o) => wOf(t(o[1]))));
         const txt = cycleLabel(field, disp);
         const txtW = wOf(txt);
         const base = x + 2 + 2 + labelW;            // 行首 = 光标(1) + 空格(1) + 标签列
@@ -814,13 +957,13 @@ export class AgentPanel {
         const padL = Math.max(0, Math.floor((maxW - txtW) / 2));
         const padR = Math.max(0, maxW - txtW - padL);
         const cell = ' '.repeat(padL) + txt + ' '.repeat(padR);
-        g.text(x + 2, midY - 3 + k, `${active ? '▸' : ' '} ${padToWidth(g, field.label, labelW)}`, active ? T.accent : T.text, T.panel);
+        g.text(x + 2, midY - 3 + k, `${active ? '▸' : ' '} ${padToWidth(g, t(field.labelKey), labelW)}`, active ? T.accent : T.text, T.panel);
         g.text(base, midY - 3 + k, '‹', active ? T.accent : T.dim, T.panel);
         g.text(txtStart, midY - 3 + k, cell, active ? T.accent : T.text, T.panel);
         g.text(txtEnd + 1, midY - 3 + k, '›', active ? T.accent : T.dim, T.panel);
       } else {
         if (field.mask && !active) disp = '*'.repeat(Math.min(disp.length, 22));   // 非编辑态遮住 Key
-        const lbl = padToWidth(g, field.label, labelW);
+        const lbl = padToWidth(g, t(field.labelKey), labelW);
         const tx0 = x + 2 + 2 + labelW;        // 行 = 光标(1) + 空格(1) + 标签列
         const avail = Math.max(1, r.x + r.w - 1 - tx0 - 1);
         // 值长过一行就让可视窗口跟着光标滑，光标落在哪一列由 caret 决定
@@ -847,22 +990,23 @@ export class AgentPanel {
     // 按钮紧跟最后一个字段（字段数量会变，别写死在 midY+1，否则第 5 行会压到按钮上）
     const bY = midY - 3 + f.length;
     const b = f.length;
-    const saveLabel = this.form.busy ? '[ 验证中 ]' : '[  保存  ]';
-    const cancelLabel = '[  取消  ]';
+    const saveLabel = this.form.busy ? t('ui.agent.btn.testing') : t('ui.agent.btn.save');
+    const cancelLabel = t('ui.agent.btn.cancel');
     this._btn(g, T, x + 2, bY, saveLabel, this.form.idx === b);
     this._btn(g, T, x + 2 + 14, bY, cancelLabel, this.form.idx === b + 1);
 
     // 提示可能很长（比如可用模型清单）：折两行、超出面板宽度截断，别溢到邻面板
     const msgW = Math.max(4, iw - 4);
-    const mLines = wrapText(g, this.form.msg || '', msgW).slice(0, 2);
+    const msgText = this.form.msgKey ? t(this.form.msgKey, this.form.msgArgs) : '';
+    const mLines = wrapText(g, msgText, msgW).slice(0, 2);
     const mColor = this.form.bad ? T.err : T.warn;
     for (let i = 0; i < mLines.length; i++) g.text(x + 2, bY + 2 + i, mLines[i], mColor, T.panel);
-    g.text(x + 2, bY + 4, 'TAB/↑↓ 切换 · ←→ 改值 · 回车 保存 · 鼠标点击也可', T.dim, T.panel);
+    g.text(x + 2, bY + 4, t('ui.agent.form.keys'), T.dim, T.panel);
     // 记录可点击区域（网格坐标），供鼠标点击命中
     this._cfg = {
       fields: rowHits.map((h, k) => ({ ...h, y: midY - 3 + k, x0: x + 1, x1: r.x + r.w - 1 })),
-      save: { y: bY, x0: x + 2, x1: x + 2 + saveLabel.length },
-      cancel: { y: bY, x0: x + 2 + 14, x1: x + 2 + 14 + cancelLabel.length },
+      save: { y: bY, x0: x + 2, x1: x + 2 + g.strWidth(saveLabel) },
+      cancel: { y: bY, x0: x + 2 + 14, x1: x + 2 + 14 + g.strWidth(cancelLabel) },
     };
   }
 
@@ -877,7 +1021,7 @@ export class AgentPanel {
 // 不用 grid 实例 —— 标题在没布局时也要能算（restore() 就发生在 layout 之前）。
 function clampTitle(s) {
   const one = String(s === undefined || s === null ? '' : s).split('\n')[0].replace(/\s+/g, ' ').trim();
-  if (!one) return '新对话';
+  if (!one) return t('ui.agent.newConv');
   let out = '', w = 0;
   for (const ch of one) {
     const cw = ch.charCodeAt(0) > 0x2e80 ? 2 : 1;
@@ -913,13 +1057,13 @@ function normProvider(p) {
 }
 function providerLabel(v) {
   const k = normProvider(v);
-  return k === 'anthropic' ? 'Anthropic' : (k === 'openai' ? 'OpenAI 兼容' : '自动识别');
+  return t(k === 'anthropic' ? 'ui.agent.opt.anthropic' : (k === 'openai' ? 'ui.agent.opt.openai' : 'ui.agent.opt.auto'));
 }
 
-/** 循环字段当前值的显示名（协议、心情语句都走这里，别再写死成 providerLabel） */
+/** 循环字段当前值的显示名（协议、心情语句都走这里）—— 候选项第二项存的是语言包 key，现取现翻 */
 function cycleLabel(field, value) {
   const o = (field.opts || []).find((x) => x[0] === value);
-  return o ? o[1] : String(value);
+  return o ? t(o[1]) : String(value);
 }
 
 /** 按**显示列宽**补空格（自绘网格里汉字占 2 列，padEnd 按字符数补会对不齐） */

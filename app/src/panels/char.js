@@ -3,6 +3,8 @@
 // 立绘来自素材包：characters/<pack>/frames/*.json，标签由文件名决定，用户可自定义
 import { blit } from '../charpack.js';
 import { ATTR } from '../grid.js';
+import { t } from '../i18n/index.js';
+import { moodNameKey } from '../mood.js';
 import { sparkline } from './sys.js';
 
 export class CharPanel {
@@ -35,7 +37,7 @@ export class CharPanel {
     const r = this.rect, T = C.theme, m = this.mood;
     if (!r || r.w < 10 || r.h < 8) return;
     g.box(r.x, r.y, r.w, r.h, T.accent, T.panel, (this.pack && this.pack.id ? this.pack.id : 'CHAR').toUpperCase(),
-      T.accent, '方块字符');
+      T.accent, t('ui.char.style'));
     this._t = C.t;
     const x = r.x + 1, iw = r.w - 2;
     let y = r.y + 1;
@@ -62,7 +64,7 @@ export class CharPanel {
       // 谁说了算：AGENT = agent 自己声明的，其余是本地兜底 / 手动调试
       const faceTag = this.pack ? this.pack.tagFor(m.frameTag()) : '';
       const hot = m.source === 'agent';
-      const miss = hot && m.face && !m.faceOk() ? ' ✗未收录' : '';
+      const miss = hot && m.face && !m.faceOk() ? t('ui.char.missing') : '';
       ctr(`${m.sourceTag}${miss} · ${faceTag}`, hot ? T.accentDim : T.dim);
     }
     if (y < r.y + r.h - 1) {
@@ -73,7 +75,7 @@ export class CharPanel {
       ctr(s, T.accent);
     }
     if (y < r.y + r.h - 1) ctr(`mood ${Math.round(m.value)} / 100`, T.dim);
-    if (y < r.y + r.h - 1) { y++; ctr('情绪历史', T.dim); }
+    if (y < r.y + r.h - 1) { y++; ctr(t('ui.char.history'), T.dim); }
     if (y < r.y + r.h - 1) {
       const n = Math.max(4, iw - 2);
       ctr(sparkline(m.history.slice(-n)), T.accentDim);
@@ -83,12 +85,11 @@ export class CharPanel {
     if (y < r.y + r.h - 1) {
       y++;
       const keys = ['idle', 'think', 'stream', 'sleepy', 'error'];
-      const labels = ['待机', '思考', '输出', '瞌睡', '出错'];
       this._chips = [];
       this._chipY = y;
       let cx = r.x + 1;
       for (let i = 0; i < keys.length; i++) {
-        const s = labels[i];
+        const s = t(moodNameKey(keys[i]));   // 表情标签 = 心情状态名，走同一个语言包
         const w = g.strWidth(s);
         if (cx + w + 1 > r.x + r.w - 1) break;
         const on = m.key === keys[i];

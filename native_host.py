@@ -28,6 +28,7 @@ Usage
 import argparse
 import atexit
 import ctypes
+import json
 import os
 import shutil
 import socket
@@ -37,6 +38,8 @@ import threading
 import time
 import urllib.request
 from ctypes import wintypes
+
+_T0 = time.time()          # 宿主进程的时间原点：下面所有"从启动算起 {n}ms"都拿它算
 
 APP_ID = "Ponko-HUD.Desktop"
 APP_TITLE = "Ponko-HUD"
@@ -59,6 +62,53 @@ ERROR_ALREADY_EXISTS = 183
 
 _backend_proc = None
 _backend_owned = False
+
+BOOT_LOG = os.path.join(RUN_DIR, "boot.log")
+
+# 后端还没应答的那段时间，窗口里先显示这一页（纯静态、零依赖）。
+# 以前这段时间是"窗口压根还没建出来"，看上去就像双击了没反应。
+SPLASH_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Ponko-HUD</title>
+<style>
+  html,body{margin:0;height:100%;background:#070C10;overflow:hidden}
+  body{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;
+       font:13px "Cascadia Mono",Consolas,"Microsoft YaHei",monospace}
+  .t{color:#7DF9FF;letter-spacing:.28em}
+  .s{color:#688492;letter-spacing:.12em}
+</style></head>
+<body><div class="t">PONKO-HUD</div><div class="s">Connecting to the local backend…</div></body></html>
+"""
+
+
+def boot_reset() -> None:
+    """每次启动都从零开一份启动记录 —— 里面只会有本次启动真实发生的事。"""
+    try:
+        os.makedirs(RUN_DIR, exist_ok=True)
+        open(BOOT_LOG, "w", encoding="utf-8").close()
+    except OSError:
+        pass
+
+
+def _boot(tag: str, key: str, args: dict | None = None) -> None:
+    """写一行**真实**启动日志：事件 id + 参数（格式见 server/bootlog.js；后端与前端读同一份）。
+
+    为什么不写成品句子：启动画面上的语言要跟着语言包走，而这些行是在页面拿到语言包
+    **之前**就落盘的 —— 只有把"发生了什么"（key）和"参数是什么"（args）存下来，
+    页面才能用当前语言重新渲染（见 app/src/i18n/*.js 与 app/src/boot.js 的 replay）。
+
+    行格式（人可读；`{...}` 一定是行尾那段紧凑 JSON，所以正文里带空格也不会解析错）：
+        2026-10-13 00:40:12.345  host   boot.host.started {"pid":1234,"py":"3.14.4"}
+    """
+    now = time.time()
+    ms = min(999, int((now % 1) * 1000))
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)) + f".{ms:03d}"
+    payload = json.dumps(args or {}, ensure_ascii=False, separators=(",", ":"))
+    try:
+        os.makedirs(RUN_DIR, exist_ok=True)
+        with open(BOOT_LOG, "a", encoding="utf-8", errors="replace") as f:
+            f.write(f"{stamp}  {tag:<6} {key} {payload}\n")
+    except OSError:
+        pass
 
 
 def _log(*args_, **kwargs):
@@ -89,6 +139,7 @@ def port_listening(port: int) -> bool:
 
 
 def find_node() -> str | None:
+    """找 node.exe（本机实测 5ms —— 所以它留在主线程上也无所谓）。"""
     exe = shutil.which("node") or shutil.which("node.exe")
     if exe:
         return exe
@@ -101,46 +152,104 @@ def find_node() -> str | None:
     return None
 
 
-def ensure_backend(port: int) -> None:
-    """Start server.js unless something already listens on the port."""
+def node_version(node: str) -> str:
+    """真的问一次 node 自己的版本，别猜。"""
+    try:
+        out = subprocess.run([node, "-v"], capture_output=True, text=True,
+                             timeout=8, creationflags=CREATE_NO_WINDOW)
+        return (out.stdout or out.stderr or "").strip() or "未知版本"
+    except Exception:  # noqa: BLE001
+        return "版本探测失败"
+
+
+def spawn_backend(port: int, node: str) -> None:
+    """把 server.js 拉起来就返回 —— **不等它就绪，也不探端口**（探端口在后台做）。"""
     global _backend_proc, _backend_owned
-    if port_listening(port):
-        _log(f"[host] backend already listening on {port}, reusing it")
-        return
-
-    node = find_node()
-    if not node:
-        _log("[host] FATAL: node.exe not found in PATH", file=sys.stderr)
-        sys.exit(1)
-
     server = os.path.join(ROOT, "server", "server.js")
+    # ★ 端口必须真的传过去：以前只改了窗口要开的 URL，后端仍按默认 8787 监听，
+    #   于是 --port 8791 会一直等不到应答，白等 20 秒才开窗。
+    env = dict(os.environ, PONKO_PORT=str(port))
     _backend_proc = subprocess.Popen(
         [node, server],
         cwd=ROOT,
+        env=env,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         creationflags=CREATE_NO_WINDOW,
     )
     _backend_owned = True
     write_pid("backend.pid", _backend_proc.pid)
-    _log(f"[host] backend started (pid {_backend_proc.pid})")
+    _log(f"[host] backend started (pid {_backend_proc.pid}) on port {port}")
+    _boot("host", "boot.host.spawned", {"pid": _backend_proc.pid, "port": port})
+    # node -v 要另起一个子进程（本机实测 400ms+），而它只是启动日志里的一行诊断 ——
+    # 放到后台写，别把"拉起后端"乃至开窗一起拖慢。
+    threading.Thread(target=_probe_node_version, args=(node,),
+                     name="ponko-nodev", daemon=True).start()
 
-    deadline = time.time() + 20
-    url = f"http://127.0.0.1:{port}/index.html"
-    while time.time() < deadline:
-        if _backend_proc.poll() is not None:
-            _log("[host] FATAL: backend exited immediately", file=sys.stderr)
-            sys.exit(1)
-        if port_listening(port):
-            try:
-                with urllib.request.urlopen(url, timeout=2) as r:
-                    if r.status == 200:
-                        _log("[host] backend ready")
-                        return
-            except Exception:  # noqa: BLE001 - keep polling
-                pass
-        time.sleep(0.25)
-    _log("[host] WARNING: backend did not answer in 20s, opening anyway")
+
+def _probe_node_version(node: str) -> None:
+    _boot("host", "boot.host.node", {"ver": node_version(node), "path": node})
+
+
+def _on_window_shown() -> None:
+    """窗口真正显示出来的那一刻记一行真日志 —— "双击到看见窗口"就落在这一行里。"""
+    _boot("host", "boot.host.shown", {"ms": int((time.time() - _T0) * 1000)})
+
+
+def backend_answers(url: str, port: int) -> bool:
+    """端口通 + 真的吐回 200 才算"后端在"：只认实际应答，不认"进程还活着"。"""
+    if not port_listening(port):
+        return False
+    try:
+        with urllib.request.urlopen(url, timeout=2) as r:
+            return r.status == 200
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def run_backend(window, url: str, port: int, node: str, timeout: float = 30.0) -> None:
+    """后台整条后端链路：有没有现成的 → 没有就拉起 → 等它真的应答 → 让窗口换真页面。
+
+    为什么整条都放后台：第一步 port_listening() 要初始化 Winsock，**本机实测 365ms**，
+    而它只是"问一句端口上有没有人"；以前它挡在 create_window 前面，等于每段开机
+    都要先白付这 365ms。现在窗口先起（显示占位页），这段与 pywebview 装载、
+    WebView2 起窗（约 1.5s）并行跑 —— 谁先好谁先上屏。
+    """
+    t0 = time.time()
+    if backend_answers(url, port):
+        _log(f"[host] backend already listening on {port}, reusing it")
+        _boot("host", "boot.host.reuse", {"port": port})
+    else:
+        spawn_backend(port, node)
+
+    ok = False
+    while time.time() - t0 < timeout:
+        if _backend_proc is not None and _backend_proc.poll() is not None:
+            _log("[host] backend exited before answering", file=sys.stderr)
+            _boot("host", "boot.host.dead")
+            break
+        if backend_answers(url, port):
+            ms = int((time.time() - t0) * 1000)
+            _log("[host] backend ready")
+            _boot("host", "boot.host.ready", {"ms": ms})
+            ok = True
+            break
+        time.sleep(0.05)                      # 细粒度：别再让轮询间隔（原来 0.25s）白加进等待
+    if not ok:
+        _log(f"[host] WARNING: backend did not answer in {timeout}s, loading anyway")
+        _boot("host", "boot.host.late", {"s": int(timeout)})
+
+    # pywebview 的 load_url 在窗口实例建出来之前会被静默丢掉（instances 里还没有它）→
+    # 先等 shown，再导航。
+    try:
+        window.events.shown.wait(timeout)
+    except Exception as e:  # noqa: BLE001
+        _log(f"[host] waiting for window.shown failed: {e!r}")
+    try:
+        window.load_url(url)
+        _log(f"[host] navigating to {url}")
+    except Exception as e:  # noqa: BLE001
+        _log(f"[host] load_url failed: {e!r}")
 
 
 def stop_backend() -> None:
@@ -372,51 +481,93 @@ def main() -> None:
     ap.add_argument("--devtools", action="store_true", help="enable WebView2 dev tools")
     ap.add_argument("--no-backend", action="store_true", help="assume server already runs")
     ap.add_argument("--query", default="", help="extra url query, e.g. \"?demo=1\" or \"?mood=error\"")
+    ap.add_argument("--fast", action="store_true",
+                    help="skip the boot log splash (?boot=0) -- saves ~2s while iterating")
     args = ap.parse_args()
 
     atexit.register(stop_backend)
 
+    boot_reset()
+    _boot("host", "boot.host.started", {"pid": os.getpid(), "py": sys.version.split()[0]})
+    if args.fast:
+        _boot("host", "boot.host.fast")
+
     if not acquire_single_instance():
         if focus_existing():
             _log("[host] already running, raised existing window")
+            _boot("host", "boot.host.already.raise")
         else:
             # 之前这里会继续往下走，于是桌上叠出第二个全屏窗口（日志 16:02:52 那次）。
             # 已经有一个实例占着互斥体，就不再开新窗口，直接退出。
             _log("[host] another instance holds the mutex but its window was not found; exiting")
+            _boot("host", "boot.host.already.ghost")
         sys.exit(0)
+    _boot("host", "boot.host.mutex", {"id": APP_ID})
 
-    if not args.no_backend:
-        ensure_backend(args.port)
+    # ★ 这里只确认"机器上有没有 node"（5ms，见下面的实测），**不探端口、不等后端**：
+    #   探端口要初始化 Winsock（365ms）、拉起后端要等它应答（~0.5s），两件都交给
+    #   run_backend() 在后台做，窗口同时起 —— 谁也不挡谁。
+    node = None
+    if args.no_backend:
+        _boot("host", "boot.host.nobackend")
+    else:
+        node = find_node()
+        if not node:
+            _log("[host] FATAL: node.exe not found in PATH", file=sys.stderr)
+            _boot("host", "boot.host.nonode")
+            sys.exit(1)
 
     # own taskbar identity (must happen before any window is created)
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+        _boot("host", "boot.host.taskbar", {"id": APP_ID})
     except Exception:  # noqa: BLE001
         pass
 
+    t_imp = time.time()
     import webview  # imported late: single-instance exit should stay cheap
+    try:
+        from importlib.metadata import version as _pkgver
+        wv_ver = _pkgver("pywebview")
+    except Exception:  # noqa: BLE001
+        wv_ver = getattr(webview, "__version__", "unknown")
+    _boot("host", "boot.host.pywebview", {"ver": wv_ver, "ms": int((time.time() - t_imp) * 1000)})
 
     if os.path.isfile(ICON):
         try:
             webview._state["icon"] = ICON
         except Exception:  # noqa: BLE001
             pass
+    else:
+        _boot("host", "boot.host.noicon")
 
     sw, sh = screen_size()
 
-    url = f"http://127.0.0.1:{args.port}/index.html{args.query}"
+    query = (args.query or "").strip()
+    if query and not query.startswith("?"):
+        query = "?" + query
+    if args.fast:
+        query += ("&" if query else "?") + "boot=0"
+    url = f"http://127.0.0.1:{args.port}/index.html{query}"
 
     # JS bridge: page's "退出" button -> window.destroy() -> clean shutdown
     api = UIApi()
+    # 后端由我们自己管（node 已找到）→ 窗口先显示占位页，等后端应答再导航过去
+    splash = node is not None
+    first_url = None if splash else url
+    first_html = SPLASH_HTML if splash else None
+    how = "@boot.host.how.splash" if splash else "@boot.host.how.load"
 
     if args.windowed:
         # old windowed behaviour: a resizable box centred on the screen
         width = max(1000, min(1680, sw - 120))
         height = max(640, min(940, sh - 120))
         _log(f"[host] opening {url} windowed at {width}x{height}")
+        _boot("host", "boot.host.win", {"mode": "@boot.host.mode.windowed", "w": width, "h": height, "how": how, "url": url})
         window = webview.create_window(
             APP_TITLE,
-            url=url,
+            url=first_url,
+            html=first_html,
             width=width,
             height=height,
             min_size=(900, 560),
@@ -433,9 +584,11 @@ def main() -> None:
         # (pywebview's fullscreen is itself borderless; do not also set
         #  frameless, which interferes with the maximise that hides the taskbar)
         _log(f"[host] opening {url} fullscreen borderless ({sw}x{sh})")
+        _boot("host", "boot.host.win", {"mode": "@boot.host.mode.full", "w": sw, "h": sh, "how": how, "url": url})
         window = webview.create_window(
             APP_TITLE,
-            url=url,
+            url=first_url,
+            html=first_html,
             width=sw,
             height=sh,
             fullscreen=True,
@@ -446,6 +599,15 @@ def main() -> None:
         )
 
     api._window = window
+
+    try:
+        window.events.shown += _on_window_shown
+    except Exception:  # noqa: BLE001 - 假 webview / 老版本没有 events 也不影响开窗
+        pass
+
+    if splash:
+        threading.Thread(target=run_backend, args=(window, url, args.port, node),
+                         name="ponko-backend", daemon=True).start()
 
     threading.Thread(target=window_decorator, daemon=True).start()
 

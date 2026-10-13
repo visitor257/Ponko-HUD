@@ -19,6 +19,13 @@ export async function geoLookup(ip) {
   return r.json();
 }
 
+/** 启动记录（宿主 + 后端的真实自检日志）：启动画面回放用 */
+export async function bootLog() {
+  const r = await fetch('/api/bootlog');
+  if (!r.ok) throw new Error('bootlog ' + r.status);
+  return r.json();
+}
+
 function stream(url, body, onEvent, onEnd) {
   const ctrl = new AbortController();
   fetch(url, {
@@ -64,9 +71,12 @@ export const getLlmConfig = () => fetch('/api/llm/config')
   .then((r) => r.json()).catch(() => ({ configured: false }));
 export const saveLlmConfig = (cfg) => post('/api/llm/config', cfg);
 // 连通性验证：真的打一次远端接口，返回 { ok, ms, model, via } 或 { ok:false, error }
+// 注意：这一层只管"把请求发出去、把回包解成对象"，**不负责措辞** ——
+// 错误原文原样往上传（String(e.message)），要加"连接失败："这种前缀由调用方的语言包做
+// （见 agent.js 的 ui.agent.form.testFail）。服务层不 import i18n，见 test_i18n.mjs 第 8 节。
 export const testLlmConfig = (cfg) => fetch('/api/llm/test', {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg || {}),
-}).then((r) => r.json()).catch((e) => ({ ok: false, error: '请求后端失败：' + String(e.message) }));
+}).then((r) => r.json()).catch((e) => ({ ok: false, error: String(e.message) }));
 export const abortShell = (session) => fetch('/api/shell', {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ abort: true, session }),

@@ -12,6 +12,9 @@
 import { ATTR, mix } from '../grid.js';
 import { TAB_COLORS } from '../tabcolors.js';
 import { runShell, abortShell, ptyWrite, ptyResize, ptyStop, ptyClose, ptyStream, shellState } from '../api.js';
+// 只为了 `lang` 这条面板命令：它要报"现在是什么语言 / 有哪些可选 / 切过去"。
+// 语言清单只有 i18n 那份（availableLangs），这里不另抄一张表。
+import { availableLangs, langOf, useLang, t } from '../i18n/index.js';
 import { VT, cellColor } from '../vt.js';
 
 const MAX_TABS = TAB_COLORS.length;      // 上限 = 色板容量（每个标签一个独有色）
@@ -42,7 +45,7 @@ export class ShellTab {
     this.histIdx = -1;             // -1 = 未在浏览历史
     this.histDraft = '';           // 进入浏览前正在编辑的草稿
     this._histShown = null;        // 上次由 ↑/↓ 填进输入框的内容（判断用户是否又改了）
-    this.push('info', 'Ponko-HUD shell · 持久会话 · 输入 ponko-help 看可用命令');
+    this.pushT('info', 'ui.shell.welcome');
     this.refreshState();
   }
 
@@ -81,8 +84,8 @@ export class ShellTab {
     const off = ptyStream(this.id,
       (e) => {
         if (e.t === 'out') { vt.write(e.text || ''); if (this.onLine) this.onLine(e.text || ''); }
-        else if (e.t === 'exit') this.leavePty('终端已退出');
-        else if (e.t === 'error') this.push('err', 'PTY：' + (e.msg || '未知错误'));
+        else if (e.t === 'exit') this.leavePty('ui.shell.ptyExit');
+        else if (e.t === 'error') this.pushT('err', 'ui.shell.ptyError', { msg: e.msg || t('ui.shell.unknownError') });
       },
       () => { /* 流断即视为会话结束 */ },
     );
@@ -91,6 +94,10 @@ export class ShellTab {
     if (cmd) setTimeout(() => ptyWrite(cmd + '\r', this.id), 1500);
   }
 
+  /**
+   * 退出真终端。reason 传**语言包 key**（'ui.shell.ptyExit' 之类），不传就落到默认那句 ——
+   * 存 key 才能让这行在切语言后跟着重译（见 pushT / retranslate）。
+   */
   leavePty(reason) {
     if (!this.pty) return;
     try { this.pty.off && this.pty.off(); } catch (e) {}
@@ -100,7 +107,7 @@ export class ShellTab {
     ptyStop(this.id);
     // 退出真终端后重新拉一次后端状态，保证 shell 种类/cwd 跟后端一致（cmd/pwsh 不同步过）
     this.refreshState();
-    this.push('info', reason || '已退出真终端，回到管道模式。');
+    this.pushT('info', reason || 'ui.shell.leftPty');
   }
 
   /** 真终端里的按键：整行提交 + 回车；程序自己负责回显 */
@@ -123,6 +130,10 @@ export class ShellTab {
 
   get prompt() { return this.kind === 'cmd' ? `${this.cwd}>` : `PS ${this.cwd}> `; }
 
+  /**
+   * 记一行**程序输出/命令回显** —— 那是数据，不翻，原样显示。
+   * 界面自己说的话（欢迎语、帮助、报错话术）走 pushT()：存 key，切语言时能整屏重译。
+   */
   push(kind, text) {
     for (const l of String(text === undefined || text === null ? '' : text).split('\n')) {
       this.lines.push({ kind, text: l });
@@ -130,6 +141,53 @@ export class ShellTab {
     }
     if (this.lines.length > 500) this.lines.splice(0, this.lines.length - 500);
     this.scroll = 0;
+  }
+
+  /**
+   * 记一行**界面文案**：存 key + 参数，不存成品句子。
+   * 成品句子一旦推进行缓冲就定死了，切语言只有"以后新推的行"会变、老行留在旧语言里 ——
+   * 屏幕上就是半中半英。存 key 才有 retranslate() 这条回头路。
+   * （启动日志那套也是同一个思路，见 server/bootlog.js：存事件 id + 参数。）
+   */
+  pushT(kind, key, args) {
+    const s0 = t(key, args);
+    for (const l of String(s0).split('\n')) {
+      this.lines.push({ kind, text: l, k: key, a: args });
+      if (this.onLine) { try { this.onLine(l); } catch (e) { /* 同上 */ } }
+    }
+    if (this.lines.length > 500) this.lines.splice(0, this.lines.length - 500);
+    this.scroll = 0;
+  }
+
+  /** 语言变了：把带 key 的历史行重译一遍（真程序输出的行没有 key，原样不动） */
+  retranslate() {
+    for (const l of this.lines) if (l.k) l.text = t(l.k, l.a);
+  }
+
+  /**
+   * `lang` —— 看语言 / 换语言（面板内置命令，见 exec 里的截获点）。
+   *   lang            → 当前 lang_id + 用法 + 可切换的 lang_id（**一个一行**）
+   *   lang <lang_id>  → 切过去（**当场整屏重译，不用重开**；偏好写进浏览器，下次开还是它）
+   * 认不出的 id **不切**（useLang 返回 false）—— 把可选清单再列一遍，
+   * 免得打错一个字就"看起来什么都没发生"。
+   * 只列 id、**不解释每个 id 是哪种语言**（用户 2026-10-13 定的）：id 本身就是给
+   * 打命令的人看的标识，多一列语言名只是噪声。语言名留给以后的选择界面。
+   */
+  langCmd(c) {
+    const ids = availableLangs().map((l) => l.id);
+    const arg = c === 'lang' ? '' : c.split(/[ \t]+/)[1].toLowerCase();
+    // id 是**标识**不是文案（`zh-cn` / `en` / `ja`），逐行原样列出，不翻、也不解释是哪种语言
+    if (!arg) {
+      this.pushT('info', 'ui.shell.langCurrent', { id: langOf() });
+      for (const id of ids) this.push('info', id);
+      return;
+    }
+    if (!useLang(arg)) {
+      this.pushT('err', 'ui.shell.langBad', { id: arg });
+      for (const id of ids) this.push('info', id);
+      return;
+    }
+    this.pushT('info', 'ui.shell.langDone', { id: arg });
   }
 
   async exec(cmd) {
@@ -144,18 +202,29 @@ export class ShellTab {
     if (c === 'clear' || c === 'cls') { this.lines.length = 0; return; }
     // 用 ponko-help 而不是 help：后者会盖掉 PowerShell 的 help（Get-Help）与 CMD 的 help.exe，
     // 而本面板的非 PTY 模式下内置命令是优先拦截的，原生那条就永远执行不到。
+    // 语言：`lang` 报当前 + 用法 + 可选清单，`lang <id>` 切过去。
+    // 跟 clear / ponko-help 一样是**面板自己的命令**（真 shell 里没有 lang 这一条），
+    // 所以在这里截住、不发给后端。只认"整条恰好是 lang 或 lang <一个词>"——
+    // `lang a b` 这种当普通命令送下去，绝不吞用户打的东西。
+    if (c === 'lang' || /^lang[ \t]+\S+$/.test(c)) {
+      this.langCmd(c);
+      return;
+    }
     if (c === 'ponko-help') {
-      this.push('info', 'Ponko-HUD 面板帮助 · 原生 help / Get-Help 未被占用，照常可用');
-      this.push('info', '当前 shell：' + (this.kind === 'cmd' ? 'CMD' : 'PowerShell'));
-      this.push('info', 'cmd / powershell   切换 shell（CMD 下 exit 先退回 PowerShell）');
-      this.push('info', 'exit   结束本标签的 shell 并关闭该标签（最后一个会自动开个新的）');
-      this.push('info', 'clear 清屏 · ESC 中断 · ↑/↓ 翻命令历史 · pty <cmd> 开真终端（任意程序都行）');
-      this.push('info', '交互式程序（python / node / ssh / vim…裸跑）会自动开真终端');
-      this.push('info', '真终端 = 按键直通：^C 中断 · ^D 结束输入 · ^E 退出终端');
-      this.push('info', '多标签：^⇧T 新建 · ^Tab 切换 · ^⇧W 关闭（各标签互相独立）');
-      this.push('info', '         每个标签一个颜色（标签栏 / SHELL 右上角各一块），认颜色不认编号');
-      this.push('info', 'AGENT 那边也有多标签对话，同一组快捷键按「焦点」分派：焦点在 AGENT 时');
-      this.push('info', '         ^⇧T/^Tab 操作对话、^⇧W 删对话（会先弹一行确认）；对话自动存档，重启原样恢复');
+      this.pushT('info', 'ui.shell.help.title');
+      this.pushT('info', 'ui.shell.help.shell', { kind: this.kind === 'cmd' ? 'CMD' : 'PowerShell' });
+      this.pushT('info', 'ui.shell.help.cmd');
+      this.pushT('info', 'ui.shell.help.exit');
+      this.pushT('info', 'ui.shell.help.clear');
+      this.pushT('info', 'ui.shell.help.lang');
+      this.pushT('info', 'ui.shell.help.pty');
+      this.pushT('info', 'ui.shell.help.keys');
+      this.pushT('info', 'ui.shell.help.tabs');
+      this.pushT('info', 'ui.shell.help.tabs2');
+      this.pushT('info', 'ui.shell.help.agent');
+      this.pushT('info', 'ui.shell.help.agent2');
+      this.pushT('info', 'ui.shell.help.agent3');
+      this.pushT('info', 'ui.shell.help.boot');
       return;
     }
     this.busy = true;
@@ -181,14 +250,15 @@ export class ShellTab {
       else if (e.t === 'exit') {
         this.busy = false;
         if (e.code !== 0) {
-          this.push('err', (e.error === 'timeout' ? '命令超时（60s），已中断' : `退出码 ${e.code}`));
-          if (this.mood.localSignals) this.mood.fromLocal('error', '上一条命令失败了');
+          if (e.error === 'timeout') this.pushT('err', 'ui.shell.timeout');
+          else this.pushT('err', 'ui.shell.exitCode', { code: e.code });
+          if (this.mood.localSignals) this.mood.fromLocal('error', 'ui.shell.cmdFailed');
           else this.mood.touch();
         } else this.mood.touch();
       } else if (e.t === 'error') {
         this.busy = false;
-        this.push('err', e.text);
-        if (this.mood.localSignals) this.mood.fromLocal('error', 'shell 出错');
+        this.push('err', e.text);                 // 后端给的错误原文 —— 数据，不翻
+        if (this.mood.localSignals) this.mood.fromLocal('error', 'ui.shell.shellError');
         else this.mood.touch();
       }
     }, undefined, this.id);
@@ -200,7 +270,7 @@ export class ShellTab {
     abortShell(this.id);
     try { this._cancel && this._cancel(); } catch (e) {}
     this.busy = false;
-    this.push('info', '^C 已中断');
+    this.pushT('info', 'ui.shell.interrupted');
   }
 
   /** ↑ / ↓：真终端里交给程序（命令历史），管道模式里翻本地命令历史（滚屏交给鼠标滚轮） */
@@ -301,9 +371,10 @@ export class ShellTab {
       while (cx < r.x + r.w - 1) { g.set(cx, yy, ' ', T.text, T.panel); cx++; }
     }
     if (!hasContent) {
-      const name = this._ptyLabel ? `：${this._ptyLabel}` : '';
-      g.text(x + 2, r.y + 1 + (viewH >> 1), `正在启动真终端${name}…`, T.dim, T.panel);
-      g.text(x + 2, r.y + 2 + (viewH >> 1), '（真终端让交互程序能用；Ctrl+Shift+E 退出）', T.darker, T.panel);
+      g.text(x + 2, r.y + 1 + (viewH >> 1),
+        this._ptyLabel ? t('ui.shell.startingPtyNamed', { name: this._ptyLabel }) : t('ui.shell.startingPty'),
+        T.dim, T.panel);
+      g.text(x + 2, r.y + 2 + (viewH >> 1), t('ui.shell.ptyHint'), T.darker, T.panel);
     }
 
     // IME 合成中：拼音预览画在光标处（还没发进程序，只是让你看见自己正在打什么）
@@ -404,6 +475,9 @@ export class ShellPanel {
   onArrow(dir) { return this.tab ? this.tab.onArrow(dir) : true; }
   onWheel(d) { return this.tab ? this.tab.onWheel(d) : false; }
   push(kind, text) { if (this.tab) this.tab.push(kind, text); }
+  pushT(kind, key, args) { if (this.tab) this.tab.pushT(kind, key, args); }
+  /** 语言变了：**所有**标签（含后台标签）的历史行都要重译，不只是当前那个 */
+  retranslate() { for (const tab of this.tabs) tab.retranslate(); }
 
   /**
    * 取一个当前没人用的颜色（全占满才复用）。
@@ -466,6 +540,13 @@ export class ShellPanel {
     this._syncRect();
   }
 
+  /**
+   * UI 语义地关掉一个标签（保护最后一个 —— 面板不能空着）。
+   * 现在**没有键位入口**：^⇧W 已按用户要求删掉，关标签是在那个标签里打 `exit`
+   * （走的是会话语义 _onTabDead，最后一个也会照关并自动补新的）。这条留着是因为
+   * "想关掉某个标签"和"那个 shell 自己结束了"是两件事（见 _onTabDead 的说明），
+   * 以后要加鼠标上的关闭入口（标签上的 ×）时接的就是它。
+   */
   closeTab(i) {
     if (this.tabs.length <= 1) return false;            // 留最后一个，别把面板清空
     const k = (i === undefined || i === null) ? this.active : i;

@@ -1,6 +1,7 @@
 // Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // 主题：一套心情 = 一套配色。心情变化时整个界面（含地球陆地、角色、光标）一起换色。
 import { rgb } from './grid.js';
+import { t } from './i18n/index.js';
 
 const BASE = {
   bg: rgb(8, 12, 16),
@@ -21,12 +22,14 @@ const BASE = {
   node: rgb(255, 108, 108),
 };
 
+// name 存的是**语言包 key**，不是成品文案 —— 语序/语言由当前语言包决定。
+// 存成品句子（或在这里调 t()）都不行：本模块在 import 那一刻就求值了，早于 initLang()。
 const MOODS = {
-  idle:   { accent: rgb(72, 214, 208), land: rgb(46, 176, 168), name: '平静 · 待机',   glow: 0.6 },
-  think:  { accent: rgb(240, 186, 80), land: rgb(206, 156, 62), name: '专注 · 思考',   glow: 0.8 },
-  stream: { accent: rgb(96, 232, 128), land: rgb(78, 206, 110), name: '兴奋 · 输出',   glow: 1.0 },
-  sleepy: { accent: rgb(158, 130, 240), land: rgb(134, 108, 214), name: '困倦 · 低功耗', glow: 0.35 },
-  error:  { accent: rgb(240, 92, 92), land: rgb(206, 78, 78), name: '沮丧 · 出错',   glow: 0.7 },
+  idle:   { accent: rgb(72, 214, 208), land: rgb(46, 176, 168), nameKey: 'ui.theme.idle',   glow: 0.6 },
+  think:  { accent: rgb(240, 186, 80), land: rgb(206, 156, 62), nameKey: 'ui.theme.think',  glow: 0.8 },
+  stream: { accent: rgb(96, 232, 128), land: rgb(78, 206, 110), nameKey: 'ui.theme.stream', glow: 1.0 },
+  sleepy: { accent: rgb(158, 130, 240), land: rgb(134, 108, 214), nameKey: 'ui.theme.sleepy', glow: 0.35 },
+  error:  { accent: rgb(240, 92, 92), land: rgb(206, 78, 78), nameKey: 'ui.theme.error',   glow: 0.7 },
 };
 
 export const MOOD_KEYS = Object.keys(MOODS);
@@ -47,7 +50,7 @@ export function themeFor(mood) {
       (Math.round(((m.land >> 8) & 255) * 0.45) << 8) |
       Math.round((m.land & 255) * 0.45)
     ),
-    moodName: m.name,
+    moodName: t(m.nameKey),        // 每帧现取：切语言立刻跟着变
     glow: m.glow,
     key: mood in MOODS ? mood : 'idle',
   };

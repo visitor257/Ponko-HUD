@@ -4,7 +4,8 @@ import { Grid, ATTR, rgb, mix } from './grid.js';
 import { themeFor, MOOD_KEYS } from './theme.js';
 import { Mood } from './mood.js';
 import { loadPacks } from './charpack.js';
-import { sysSnapshot, netgeo } from './api.js';
+import { sysSnapshot, netgeo, bootLog } from './api.js';
+import { BootScreen } from './boot.js';
 import { SysPanel } from './panels/sys.js';
 import { ShellPanel } from './panels/shell.js';
 import { AgentPanel } from './panels/agent.js';
@@ -17,10 +18,24 @@ import {
   ZOOM_DUR, zoomPhase, zoomEase, zoomAnimRect, zoomBorderMix,
   zoomSelfFade, zoomOtherFade, zoomOtherOrder,
 } from './zoomanim.js';
+import * as i18n from './i18n/index.js';
+
+// 语言要在任何画面（含启动画面）之前定下来：?lang=xx 覆盖 > localStorage > 默认 zh-cn。
+// 启动画面的文案走 boot.* → 默认英文（见 i18n/index.js）。
+// 这里用命名空间导入而不是 `import { t }`：本文件已经有一个模块级的 `let t`（帧计时，见主循环），
+// 直接 import t 会重复声明。
+i18n.initLang();
 
 const canvas = document.getElementById('screen');
 const grid = new Grid(canvas, { fontSize: 15, lineHeight: 1.2 });
 const hidden = document.getElementById('hidden-input');
+
+// 启动画面（eDEX-UI 那种开机刷屏）：每行都是本次运行真实发生的事，见 boot.js。
+// ?boot=0 跳过（自动化验证用），?bootpace=N 改回放预算毫秒
+let bootScr = null;
+let bootWaiter = null;          // 等启动画面放完才开 HUD 进场动画
+let bootFrames = 0;
+let bootDrawLogged = false;     // 重绘耗时只记一次（而且要等日志回放进来了再记）
 
 const mood = new Mood();
 const panels = {
@@ -31,6 +46,22 @@ const panels = {
   char: null,                       // 等素材包加载完再建
 };
 panels.agent._clearHidden = () => { hidden.value = ''; };   // 关闭配置框时清空隐藏输入框
+panels.agent.onConvClosed = afterConvClosed;                // /del chat 关掉对话后收拾界面
+panels.agent.onDelAsk = () => armConvClose();               // /del chat 命中：先弹红条，回车才真删
+// 调试/端到端验证入口：__panels 给面板对象，__grid 给字符缓冲（chs 是**逐格的字符**，
+// 端到端要核对"屏幕上到底写了什么字"只能从这儿读 —— canvas 里的文字读不出来）。
+if (typeof window !== 'undefined') { window.__panels = panels; window.__grid = grid; }
+
+// ── 换语言后"立刻看见变化"是靠这两件事，不需要重启 ──
+//   ① 静态文案（框线标题、状态行、按键提示、心情名、toast、标签名…）本来就是**每帧现取**
+//      （`t()` 写在 draw 里）→ 下一帧自动就是新语言；
+//   ② 面板里已经推进行缓冲的**历史行**存的是 key（pushT），得在这儿主动重译一遍 ——
+//      真程序输出/agent 正文的行没有 key，原样不动（那是内容，不该翻）。
+// 以前没有这条订阅，`lang` 切完屏上什么都不变，看起来就像"没生效"。
+i18n.onLangChange(() => {
+  panels.shell.retranslate();
+  panels.agent.retranslate();
+});
 let packs = [], pack = null;
 
 // 布局
@@ -111,12 +142,12 @@ function toggleZoom(key) {
   if (zoom === key) {
     const from = { ...(rects[key] || full) };
     zoomAnim = { key, dir: -1, t: 0, from, to: { ...base }, others };
-    selToast = { text: `已还原 ${PANEL_NAME[key] || key}`, until: performance.now() + 1600 };
   } else {
     const from = { ...(baseRects[key] ? baseRects[key] : full) };
     zoomAnim = { key, dir: 1, t: 0, from, to: { ...full }, others };
     zoom = key;
-    selToast = { text: `已放大 ${PANEL_NAME[key] || key} · 点右下角 〼 恢复`, until: performance.now() + 2600 };
+    // 不弹"已放大"：框已经吃满整个内容区了，右下角那个按钮也从 ⛶ 变成 〼，
+    // 这两件事本身就是回执。再打一行字是把已经看得见的变化又说一遍。
     if (key === 'shell' || key === 'agent') focus = key;
   }
 }
@@ -227,6 +258,11 @@ function drainToPty() {
 }
 
 hidden.addEventListener('input', (e) => {
+  // 开始打别的字 = 已经走开了 —— 作废挂着的删对话确认。
+  // 这道保护很要紧：红条上写着"回车确认"，而这条输入框平时回车/^⏎就是"发消息"；
+  // 要是打了半句话再按发送，结果把对话删了，那是事故不是功能。
+  // 作废就是作废，不再回一句"你取消了" —— 红条自己消失了就是回执，那行红比这行字显眼得多。
+  if (convClose) convClose = null;
   // 配置框编辑态：把隐藏输入框的内容写进当前字段（按钮态不接受文本）
   if (focus === 'agent' && panels.agent.inConfig) {
     const a = panels.agent;
@@ -259,9 +295,7 @@ hidden.addEventListener('keydown', (e) => {
     if (focus !== 'agent') convClose = null;
     else if (!e.isComposing && e.key === 'Enter') { e.preventDefault(); confirmConvClose(); return; }
     else if (!e.isComposing && e.key === 'Escape') {
-      e.preventDefault(); convClose = null;
-      selToast = { text: '已取消删除', until: performance.now() + 1200 };
-      return;
+      e.preventDefault(); convClose = null; return;    // 红条消失就是回执，不另弹一行
     }
   }
   // 复制键在 window 捕获阶段统一处理（见 copySel 下方），这里不再重复。
@@ -291,7 +325,7 @@ hidden.addEventListener('keydown', (e) => {
     if (e.isComposing) return;                        // IME 合成中不抢
     if (e.ctrlKey && e.shiftKey && (e.key === 'E' || e.key === 'e')) {
       e.preventDefault();
-      panels.shell.leavePty('已退出真终端，回到管道模式。');
+      panels.shell.leavePty('ui.shell.leftPty');
       return;
     }
     // Alt+字符 → ESC + 字符（xterm 的 meta 惯例）
@@ -403,8 +437,23 @@ hidden.addEventListener('compositionend', (e) => {
 });
 
 const selection = new Selection();      // 鼠标拖选（详见 selection.js）
-let selToast = { text: '', until: 0 };
-// 删对话的两步确认（^⇧W 之后）：回车才真删、ESC 取消。关错了可没有回收站可找。
+/**
+ * 左下角那一行提示。**只报"看不见的东西"，不报"已经看得见的变化"** ——
+ * 删了对话（标签栏少一个，看得见）、放大/还原了（框都撑满了，看得见）、切了标签
+ * （标签栏自己高亮了，看得见）都不该在这儿说一句；界面已经在说的事，再打一行字
+ * 就是噪音。留着的只有三类不看不知道的：
+ *   · 你按了但没发生（"最后一个对话不能关" / "标签数已达上限"）—— 得说为什么；
+ *   · 屏幕外发生的操作结果（"已复制 N 字符" / "复制失败"）—— 否则不知道成没成；
+ *   · 要你再动一下的（"再点一次「退出」确认" / "正在退出…"）。
+ */
+/**
+ * 底部提示条（toast）。存的是**语言包 key + 参数**，绘制时现取现翻 —— 存成品句子的话，
+ * 切语言那一刻屏上还挂着的那条提示会留在旧语言里。只有三类会用它（见上面那段说明）。
+ */
+let selToast = { key: '', args: null, until: 0 };
+/** 记一条提示：key 是 ui.toast.* 里的某条 */
+function toast(key, args, ms) { selToast = { key, args: args || null, until: performance.now() + ms }; }
+// 删对话的两步确认（打了 /del chat 之后）：回车才真删、ESC 取消。关错了可没有回收站可找。
 let convClose = null;                   // { id, title, until }
 // 顶部右上角「退出」按钮：命中区（列范围，行 0）+ 两步确认时间戳
 let exitBtn = { x0: -1, x1: -1, y: -1 };
@@ -413,7 +462,7 @@ let quitting = false;        // 已确认退出：按钮定格在「退出中…
 
 async function copySel() {
   const text = selection.text(grid);
-  if (!text) { selToast = { text: '没有选中内容', until: performance.now() + 1200 }; return; }
+  if (!text) { toast('ui.toast.noSelection', null, 1200); return; }
   let ok = false;
   try {
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -439,7 +488,8 @@ async function copySel() {
     } catch (e2) { ok = false; }
     try { if (prev && prev.focus) prev.focus(); } catch (e3) { /* 忽略 */ }
   }
-  selToast = { text: ok ? `已复制 ${text.length} 字符` : '复制失败', until: performance.now() + 1600 };
+  if (ok) toast('ui.toast.copied', { n: text.length }, 1600);
+  else toast('ui.toast.copyFail', null, 1600);
 }
 
 // 复制快捷键统一挂 window 的**捕获阶段**。
@@ -458,23 +508,17 @@ window.addEventListener('keydown', (e) => {
   copySel();
 }, true);
 
-// 多标签终端 + 多标签对话：^⇧T 新建 / ^⇧W 关闭 / ^Tab、^⇧Tab 切换 —— **按焦点分派**：
+// 多标签终端 + 多标签对话：^⇧T 新建 / ^Tab、^⇧Tab 切换 —— **按焦点分派**：
 // 焦点在 SHELL 就是终端标签，焦点在 AGENT 就是对话标签。Tab 键切换焦点，所以
 // "我现在在哪个面板里，快捷键就管哪个面板的标签"这条规矩不用记第二套。
 // 同样挂捕获阶段 —— 点过画布或标签栏之后焦点未必还在隐藏输入框上，挂在它身上会漏键。
+// 切标签不播报：标签栏上那个色块已经挪了位、当前标签也自己亮了，
+// 焦点框线也跟着过去了 —— 眼睛看到的就是答案，左下角再说一遍只是噪音。
 function afterTabChange() {
   focus = 'shell';
   convClose = null;                     // 换到 shell 了，删对话的确认自然作废
   hidden.value = panels.shell.input || '';
   syncHidden();
-  const s = panels.shell;
-  // 标签认颜色不认编号，切换提示也就跟着说名字：只有 pwsh/cmd/程序名不够分时，
-  // 眼睛认的是颜色而不是"第几个"
-  const t = s.tab;
-  selToast = {
-    text: t ? `终端 · ${t.title()} · 共 ${s.tabs.length} 个标签` : '终端',
-    until: performance.now() + 1200,
-  };
 }
 
 function afterConvChange() {
@@ -482,33 +526,43 @@ function afterConvChange() {
   convClose = null;
   hidden.value = panels.agent.input || '';
   syncHidden();
-  const a = panels.agent, t = a.tab;
-  selToast = {
-    text: t ? `对话 · ${t.title()} · 共 ${a.tabs.length} 个` : '对话',
-    until: performance.now() + 1200,
-  };
 }
 
-/** ^⇧W：删对话要先确认（回车确认 / ESC 取消），避免一手滑就把整段对话连存档一起删掉 */
+/**
+ * 删对话的确认：先弹红条，红条上回车才真删（ESC 取消）。
+ * 唯一入口是**在输入框里打 /del chat**（打字表达的是"想删哪个"，不是"现在立刻删"）——
+ * 键盘快捷键那条路（^⇧W）2026-10-13 已按用户要求删掉：删对话这件事必须打得出来，
+ * 不靠一手滑就生效的键位。
+ * 只剩一个对话时也是"清空并换成一个新的空对话"（面板没有"零个对话"这个状态），
+ * 同样是毁数据、同样要确认 —— 红条上把这次会发生什么说清楚。
+ */
 function armConvClose() {
   const a = panels.agent;
-  if (a.tabs.length <= 1) { selToast = { text: '最后一个对话不能关', until: performance.now() + 1600 }; return; }
   const t = a.tab;
-  convClose = { id: t.id, title: t.title(), until: performance.now() + 6000 };
+  if (!t) return;
+  convClose = { title: t.title(), last: a.tabs.length <= 1, until: performance.now() + 6000 };
 }
 
+/** 红条上回车：真删。确认条是唯一的入口（打 /del chat），执行点就这一个 */
 function confirmConvClose() {
-  const a = panels.agent, t = a.tab;
-  const label = t ? t.title() : '';
+  const a = panels.agent;
   convClose = null;
-  if (!t || !a.closeTab()) {
-    selToast = { text: '最后一个对话不能关', until: performance.now() + 1600 };
-    return;
-  }
+  // delChat = 关掉当前对话；只剩一个时它会先建一个新的再关旧的（面板不能空着）。
+  // 收拾界面（焦点、隐藏输入框）与回执统一由 afterConvClosed 做。
+  if (!a.delChat()) toast('ui.toast.lastConv', null, 1600);
+}
+
+/**
+ * 对话被关掉/换掉之后，主装配要跟着收拾一遍：作废可能挂着的确认条、
+ * 把隐藏输入框接到（新的）当前对话上。
+ * 这儿**不给回执** —— 标签栏少一个（或换成新的空对话）就是回执，看得见的事不重复说。
+ * （agent.js 那边仍会报 `onConvClosed(label, kind)`，留着给别处用。）
+ */
+function afterConvClosed() {
+  convClose = null;
   focus = 'agent';
-  hidden.value = a.input || '';
+  hidden.value = panels.agent.input || '';
   syncHidden();
-  selToast = { text: `已删除对话「${label}」`, until: performance.now() + 2000 };
 }
 
 window.addEventListener('keydown', (e) => {
@@ -518,27 +572,19 @@ window.addEventListener('keydown', (e) => {
   if (e.shiftKey && (k === 'T' || k === 't')) {
     e.preventDefault(); e.stopPropagation();
     if (onAgent) {
-      if (!panels.agent.newTab()) { selToast = { text: '对话数已达上限', until: performance.now() + 1600 }; return; }
+      if (!panels.agent.newTab()) { toast('ui.toast.maxConv', null, 1600); return; }
       afterConvChange();
       return;
     }
     if (!panels.shell.newTab()) {
-      selToast = { text: '标签数已达上限', until: performance.now() + 1600 };
+      toast('ui.toast.maxTab', null, 1600);
       return;
     }
     afterTabChange();
     return;
   }
-  if (e.shiftKey && (k === 'W' || k === 'w')) {
-    e.preventDefault(); e.stopPropagation();
-    if (onAgent) { armConvClose(); return; }
-    if (!panels.shell.closeTab()) {
-      selToast = { text: '最后一个标签不能关', until: performance.now() + 1600 };
-      return;
-    }
-    afterTabChange();
-    return;
-  }
+  // （这里原来还有 ^⇧W 关标签 / 删对话 —— 2026-10-13 按用户要求删掉：
+  //   关标签在标签里打 exit，删对话在输入框里打 /del chat，都不占键位。）
   if (k === 'Tab') {                       // ^Tab 下一个 / ^⇧Tab 上一个
     e.preventDefault(); e.stopPropagation();
     if (onAgent) { if (panels.agent.nextTab(e.shiftKey ? -1 : 1)) afterConvChange(); return; }
@@ -553,8 +599,8 @@ window.addEventListener('keydown', (e) => {
 }, true);
 
 function drawToast(g, T, now) {
-  if (!selToast.text || now > selToast.until) return;
-  g.text(0, g.rows - 1, ` ${selToast.text} `, T.panel, T.accent);
+  if (!selToast.key || now > selToast.until) return;
+  g.text(0, g.rows - 1, ` ${i18n.t(selToast.key, selToast.args)} `, T.panel, T.accent);
 }
 
 /**
@@ -564,7 +610,8 @@ function drawToast(g, T, now) {
 function drawConvConfirm(g, T, now) {
   if (!convClose) return false;
   if (now > convClose.until) { convClose = null; return false; }
-  const msg = ` 删除对话「${convClose.title}」并清掉存档？  回车确认 · ESC 取消 `;
+  // 只剩一个的方式不一样（换成新的空对话），红条上就别说得含糊
+  const msg = i18n.t(convClose.last ? 'ui.convdel.last' : 'ui.convdel.one', { title: convClose.title });
   let s = '', w = 0;
   for (const ch of msg) {                  // 窗口太窄就截断，别让文字溢出画布
     const cw = g.chWidth(ch);
@@ -586,7 +633,7 @@ function requestQuit() {
   const now = performance.now();
   if (quitArmed && now - quitArmed < 3000) { quitArmed = 0; doQuit(); return; }
   quitArmed = now;
-  selToast = { text: '再点一次「退出」确认关闭 Ponko-HUD', until: now + 3000 };
+  toast('ui.toast.exitArm', null, 3000);
 }
 
 async function doQuit() {
@@ -595,7 +642,7 @@ async function doQuit() {
   // 关窗前把防抖窗口里还没落盘的对话补上，并给它一点点时间跑完这次本地 POST
   // （不等的话，桥一关请求就被掐断，最后聊的那几句会丢）
   try { panels.agent.flushSaves(); await new Promise((r) => setTimeout(r, 120)); } catch (e) { /* 尽力而为 */ }
-  selToast = { text: '正在退出 Ponko-HUD…', until: performance.now() + 8000 };
+  toast('ui.toast.exiting', null, 8000);
   // 1) 原生窗口（pywebview + WebView2）：走宿主暴露的 JS 桥关掉窗口 —— 干净的退出路径，
   //    窗口一销毁 webview.start 就返回，宿主在 finally 里顺手把 node 后端也收掉。
   //    桥是页面加载后异步注入的，本机实测大约在 start() 后 2s 就绪，所以给它 3s 慢慢等
@@ -612,7 +659,7 @@ async function doQuit() {
   try { window.close(); } catch (e) { /* 忽略 */ }
   // 兜底也失败 → 回到可点击状态，别让按钮永远卡在「退出中…」骗人
   quitting = false;
-  selToast = { text: '无法自动关闭窗口 —— 请运行 stop.bat 退出', until: performance.now() + 8000 };
+  toast('ui.toast.exitManual', null, 8000);
 }
 
 // ── 鼠标：拖拽分割条 / 拖地球 / 点表情标签 / 滚轮
@@ -761,7 +808,9 @@ canvas.addEventListener('wheel', (e) => {
 
 // ── 主循环
 let sys = null, last = performance.now(), t = 0, fps = 0;
-let bootAt = 0;                 // 进场动画起点（performance.now 时钟）
+// 进场动画起点（performance.now 时钟）。初值 Infinity 是刻意的：启动画面还没放完时
+// 万一有一帧漏进常规绘制路径，elapsed 会是负数 → 所有面板都停在"没展开"，不会闪一下全开。
+let bootAt = Infinity;
 let openDur = 0.55;            // 每个面板“框从中心向外展开”的时长（秒），?bootdur=N 可覆盖
 let contentDur = 0.5;          // 框展开后“内容淡入”的时长（秒），随 ?bootdur 同步
 const OPEN_DELAY = { globe: 0, shell: 0.12, char: 0.06, sys: 0.2, agent: 0.16 };
@@ -936,7 +985,7 @@ function drawZoomTransition(T, C) {
 
 function drawChrome(T) {
   const cols = grid.cols, rows = grid.rows;
-  const model = panels.agent && panels.agent.llmConfigured ? 'local · 已接 LLM' : 'local · 未接 LLM';
+  const model = panels.agent && panels.agent.llmConfigured ? i18n.t('ui.status.llmOn') : i18n.t('ui.status.llmOff');
   const left = '▚ PONKO-HUD   GLOBE · SHELL · AGENT · MOOD · SYS';
   grid.text(0, 0, left, T.accent, T.bg);
 
@@ -959,11 +1008,13 @@ function drawChrome(T) {
   grid.text(0, by, '─'.repeat(cols), T.line, T.bg);
   const f = focus === 'shell' ? 'SHELL' : 'AGENT';
   const tip = zoom
-    ? `▚ 已放大 ${PANEL_NAME[zoom] || zoom} · 点右下角 〼 恢复分栏`
-    : `▚ 焦点=${f} · 按住拖选文本 · 地球可拖 · 分割条可拖 · 框右下角 ⛶ 放大`;
+    ? i18n.t('ui.hint.zoomOn', { panel: PANEL_NAME[zoom] || zoom })
+    : i18n.t('ui.hint.zoomOff', { focus: f });
+  // 右边键位提示先占右侧，左边状态提示从 0 画 —— 两者重叠时后画的 keys 会**覆盖** tip 的后半，
+  // 效果等于"tip 自动裁到 keys 左边"，不用手工截断（网格是字符网格，覆盖就是覆盖）。
+  const keys = i18n.t('ui.hotkeys');
   grid.text(0, by + 1, tip, T.dim, T.bg);
-  const keys = `[TAB]切换 [^⏎]发送/回车换行 [ESC]退选/中断 [^⇧C]或[^C]复制 [^⇧T]新标签 [^Tab]切标签(随焦点) [^⇧W]关标签 [^M]心情 [^⇧Q]退出 [滚轮]滚动`;
-  grid.text(Math.max(0, cols - keys.length), by + 1, keys, T.darker, T.bg);
+  grid.text(Math.max(0, cols - grid.strWidth(keys)), by + 1, keys, T.darker, T.bg);
 }
 
 function frame(now) {
@@ -972,6 +1023,27 @@ function frame(now) {
   mood.tick(dt);
 
   const T = themeFor(mood.key);
+
+  // 启动画面期间：整幅画面交给它，HUD 一个像素都还没画（这样"刷屏 → 开框"是两段真事）
+  if (bootScr && bootScr.active) {
+    bootScr.advance(now);
+    bootScr.draw(grid, T, now);        // now 传进去：最后那段整屏淡出按同一个时钟走
+    const tDraw = performance.now();
+    grid.render();
+    // 整幅重绘耗时是真数字，但要等启动记录回放进来之后再记 —— 否则它会被排在整屏
+    // 日志的最前面（那几帧画的是还没内容可画的启动画面），看着像"第一行就是渲染耗时"
+    bootFrames++;
+    if (!bootDrawLogged && bootFrames >= 3 && bootScr.serverCount > 0) {
+      bootDrawLogged = true;
+      bootScr.log('ui', i18n.t('boot.ui.repaint', {
+        ms: (performance.now() - tDraw).toFixed(1), cells: grid.cols * grid.rows,
+      }));
+    }
+    if (bootScr.done && bootWaiter) { const r = bootWaiter; bootWaiter = null; r(); }
+    requestAnimationFrame(frame);
+    return;
+  }
+
   grid.clear(T.text, T.bg);
   grid.fill(0, 0, grid.cols, grid.rows, ' ', T.text, T.bg);
 
@@ -1036,9 +1108,11 @@ function frame(now) {
 }
 
 // ── 启动
+//
+// 两段：先在画布上刷一遍**真实**的启动日志（宿主/后端哪一步做了什么 + 页面自己这一步
+// 做了什么），放完再开 HUD 的进场动画。日志内容与来源见 boot.js 顶部注释。
 async function boot() {
   const q = new URLSearchParams(location.search);
-  bootAt = performance.now();            // 进场动画计时起点
   const bd = parseFloat(q.get('bootdur'));   // 调试：?bootdur=N 拉长/缩短进场动画（默认 0.55s）
   if (!Number.isNaN(bd) && bd > 0) { openDur = bd; contentDur = bd; }
   const zd = parseFloat(q.get('zoomanim'));  // 调试：?zoomanim=N 拉长放大/还原过场（默认 0.3s）
@@ -1049,51 +1123,157 @@ async function boot() {
   if (q.get('mood')) mood.force(q.get('mood'));
   if (q.get('local') === '1') mood.localSignals = true;
   if (q.get('nofallback') === '1') mood.autoFallback = false;
+
+  // 启动画面：?boot=0 跳过（自动化验证用）；?bootpace=N 改回放预算（毫秒）
+  const pace = parseFloat(q.get('bootpace'));
+  if (q.get('boot') !== '0') {
+    bootScr = new BootScreen(grid, Number.isNaN(pace) ? {} : { budget: pace });
+    bootScr.begin();
+  }
+  const blog = (tag, text) => { if (bootScr) bootScr.log(tag, text); };
+  const msec = (t0) => `${(performance.now() - t0).toFixed(0)}ms`;
+
+  // ① 主循环**先起**：启动画面靠它每帧推进，所以它必须在任何可能慢的 await 之前。
+  //    （反例：一开始把 requestAnimationFrame 放在 netgeo 之后 —— 外网查询要好几秒，
+  //      那几秒里画布是空的，启动画面压根没上屏。）
+  layout(); syncHidden(); hidden.focus();
+  requestAnimationFrame(frame);
+
+  // ② 取宿主 + 后端的真实启动记录（这一趟本身就是一次真请求，耗时照实记）
+  if (bootScr) {
+    const t0 = performance.now();
+    try {
+      const snap = await bootLog();
+      blog('ui', i18n.t('boot.ui.bootlog', { ms: msec(t0), n: snap.lines.length, pid: snap.pid }));
+      bootScr.replay(snap);
+    } catch (e) { blog('ui', i18n.t('boot.ui.bootlog.fail', { err: String((e && e.message) || e) })); }
+  }
+
+  // ③ 画布与等宽字体的真实度量
+  grid.resize();
+  blog('ui', i18n.t('boot.ui.canvas', {
+    w: canvas.clientWidth, h: canvas.clientHeight, dpr: grid.dpr,
+    cw: grid.cellW.toFixed(2), ch: grid.cellH, cols: grid.cols, rows: grid.rows,
+  }));
+  const ua = navigator.userAgent.match(/(Edg|Chrome)\/[\d.]+/);
+  blog('ui', i18n.t('boot.ui.engine', {
+    ua: ua ? ua[0] : i18n.t('boot.ui.engine.unknown'),
+    cores: navigator.hardwareConcurrency || '?',
+  }));
+
+  // ④ 素材包（本地小文件，很快）
   try { packs = await loadPacks(); } catch (e) { packs = []; }
   pack = packs[0] || null;
   if (pack) {
     mood.setFaces(pack.tags());           // 让面板能提示 agent 指定的表情是否收录
     panels.char = new CharPanel(mood, pack);
+    blog('pack', i18n.t('boot.pack.loaded', { id: pack.id, n: pack.tags().length }));
+  } else {
+    blog('pack', i18n.t('boot.pack.none'));
   }
+  layout();                              // 角色面板是刚建的，得再排一次才有 rect
+  blog('ui', i18n.t('boot.ui.layout', {
+    cols: grid.cols, rows: grid.rows,
+    panels: Object.values(panels).filter(Boolean).length,
+    rects: Object.keys(rects).length,
+  }));
+
   panels.agent.onToken = () => tokWindow.push(1);
   panels.shell.onLine = scanIps;
-  // 恢复上次的对话：存档在 run/conversations/（该目录不入库），一个都没存过就保持现状。
-  // 这是异步的 —— 恢复完成时标签栏自己会重画，不用等它再启动主循环。
-  panels.agent.restore();
+
+  // ⑤ 慢活**不挡启动**：结果什么时候到就什么时候补一行 —— 真等它们（外网地理查询
+  //    可能要几秒）就等于启动画面卡住不动。放到最后还能被第二趟 replay 捞进日志。
+  const tSys = performance.now();
+  sysSnapshot().then((s0) => {
+    sys = s0;
+    const disk = s0.disk ? i18n.t('boot.sys.disk', { pct: s0.disk.pct.toFixed(0) }) : '';
+    const gpu = s0.gpu ? i18n.t('boot.sys.gpu', { util: s0.gpu.util }) : '';
+    blog('sys', i18n.t('boot.sys.ok', {
+      ms: msec(tSys),
+      cpu: s0.cpu.usage.toFixed(0),
+      used: (s0.mem.used / 1073741824).toFixed(1),
+      total: (s0.mem.total / 1073741824).toFixed(1),
+      pct: s0.mem.pct.toFixed(0),
+      disk, gpu,
+      up: (s0.uptime / 3600).toFixed(1),
+    }));
+  }).catch((e) => blog('sys', i18n.t('boot.sys.fail', { ms: msec(tSys) })));
+
+  const tNet = performance.now();
+  netgeo().then((g0) => {
+    panels.globe.setGeo(g0);
+    const self = g0 && g0.self;
+    blog('net', i18n.t('boot.net.ok', {
+      ms: msec(tNet),
+      place: (self && self.ip)
+        ? `${self.ip} ${[self.country, self.city].filter(Boolean).join(' ')}`
+        : i18n.t('boot.net.nogeo'),
+      dns: ((g0 && g0.dns) || []).length,
+    }));
+  }).catch((e) => blog('net', i18n.t('boot.net.fail', { ms: msec(tNet) })));
+
+  // 恢复上次的对话：存档在 run/conversations/（该目录不入库）。同样不挡启动画面。
+  panels.agent.restore().then(() => {
+    const restored = panels.agent.tabs.filter((t) => t.msgs.length).length;
+    const msgs = panels.agent.tabs.reduce((n, t) => n + t.msgs.length, 0);
+    blog('conv', restored
+      ? i18n.t('boot.conv.restored', { n: restored, msgs })
+      : i18n.t('boot.conv.none'));
+  }).catch(() => {});
+
   // 页面被隐藏 / 关掉时，把防抖窗口里剩下的内容立刻落盘（刷新、关窗都算）
   window.addEventListener('pagehide', () => { try { panels.agent.flushSaves(); } catch (e) { /* 尽力而为 */ } });
+  // 过场走到一半改窗口大小的话，起止矩形都作废了 —— 直接跳到终态再按新尺寸排
+  window.addEventListener('resize', () => { snapZoom(); grid.resize(); layout(); syncHidden(); });
   // 调试：?hscroll=N 让地球面板 IP 说明初始横向偏移 N 列（验证左右滚动用，永久固定不自动）
   const hs = parseInt(q.get('hscroll'), 10);
   if (!Number.isNaN(hs)) { panels.globe._manualTarget = hs; panels.globe._manualUntil = 1e12; }
   // 调试：?sphase=T 把自动跑马灯的累计时钟直接设到 T 秒（验证缓动起停用），例如 ?sphase=1 看刚起步、?sphase=7.5 看将到末端
   const sp = parseFloat(q.get('sphase'));
   if (!Number.isNaN(sp)) { panels.globe._autoClock = sp; panels.globe._frozen = true; }
-  // 过场走到一半改窗口大小的话，起止矩形都作废了 —— 直接跳到终态再按新尺寸排
-  window.addEventListener('resize', () => { snapZoom(); grid.resize(); layout(); syncHidden(); });
-  layout(); syncHidden(); hidden.focus();
+
   pollSys();
   pollNet();
-  requestAnimationFrame(frame);
-  // 调试入口：?demo=1 自动跑一轮（shell 真命令 + agent 假流式）
-  //            ?demo=pty 自动进真终端跑一次 python REPL（看 VT 渲染对不对）
-  if (q.get('demo')) {
-    if (q.get('demo') === 'pty') {
-      setTimeout(() => panels.shell.exec('python'), 900);
-      setTimeout(() => panels.shell.sendToPty('print("中文 6*7 =", 6*7)'), 7000);
-      return;
-    }
-    const asCmd = q.get('shell') === 'cmd';
-    if (asCmd) {
-      // 演示 CMD 模式：切换 → cd 中文目录 → 列目录 → 触发一次错误退出码
-      setTimeout(() => panels.shell.exec('cmd'), 500);
-      setTimeout(() => panels.shell.exec('cd "C:\\Users\\Administrator\\WorkBuddy\\智能Agent\\Ponko-HUD"'), 1100);
-      setTimeout(() => panels.shell.exec('dir /b'), 1700);
-      setTimeout(() => panels.shell.exec('echo 中文正常 显示测试'), 2300);
-    } else {
-      setTimeout(() => panels.shell.exec('cd C:\\Users\\Administrator\\WorkBuddy; Get-ChildItem -Directory | Select-Object -First 3 -ExpandProperty Name'), 600);
-      setTimeout(() => panels.shell.exec('Resolve-DnsName www.qq.com -Type A -ErrorAction SilentlyContinue | Select-Object -ExpandProperty IPAddress'), 1500);
-    }
-    setTimeout(() => panels.agent.send('帮我看下构建为什么失败'), 1400);
+  if (!bootScr) { bootAt = performance.now(); return runDemo(q); }
+
+  // ⑥ 日志还没放完就等它（放完 + 停顿后 done 才会变 true）。这段时间里再取一趟启动
+  //    记录，把"演到一半才落进 boot.log 的行"（如地理查询）补进日志。
+  try {
+    const n = bootScr.replay(await bootLog());
+    if (n) blog('net', i18n.t('boot.net.more', { n }));
+  } catch (e) { /* 补不到就算了，前面那趟已经有一份 */ }
+  bootScr.finish();
+  // 等它自己放完。兜底 6s：万一 rAF 被节流到不触发（窗口建出来时不可见等），
+  // 就一次性把剩下的行摆上去收工 —— 绝不把界面卡在启动画面上。
+  await Promise.race([
+    new Promise((r) => { bootWaiter = r; }),
+    new Promise((r) => setTimeout(r, 6000)),
+  ]);
+  if (!bootScr.done) bootScr.forceDone();
+  bootAt = performance.now();          // 进场动画从这里开始（面板从中心展开）
+  runDemo(q);
+}
+
+// 调试入口：?demo=1 自动跑一轮（shell 真命令 + agent 假流式）
+//           ?demo=pty 自动进真终端跑一次 python REPL（看 VT 渲染对不对）
+function runDemo(q) {
+  if (!q.get('demo')) return;
+  if (q.get('demo') === 'pty') {
+    setTimeout(() => panels.shell.exec('python'), 900);
+    setTimeout(() => panels.shell.sendToPty('print("中文 6*7 =", 6*7)'), 7000);
+    return;
   }
+  const asCmd = q.get('shell') === 'cmd';
+  if (asCmd) {
+    // 演示 CMD 模式：切换 → cd 中文目录 → 列目录 → 触发一次错误退出码
+    setTimeout(() => panels.shell.exec('cmd'), 500);
+    setTimeout(() => panels.shell.exec('cd "C:\\Users\\Administrator\\WorkBuddy\\智能Agent\\Ponko-HUD"'), 1100);
+    setTimeout(() => panels.shell.exec('dir /b'), 1700);
+    setTimeout(() => panels.shell.exec('echo 中文正常 显示测试'), 2300);
+  } else {
+    setTimeout(() => panels.shell.exec('cd C:\\Users\\Administrator\\WorkBuddy; Get-ChildItem -Directory | Select-Object -First 3 -ExpandProperty Name'), 600);
+    setTimeout(() => panels.shell.exec('Resolve-DnsName www.qq.com -Type A -ErrorAction SilentlyContinue | Select-Object -ExpandProperty IPAddress'), 1500);
+  }
+  setTimeout(() => panels.agent.send('帮我看下构建为什么失败'), 1400);
 }
 boot();

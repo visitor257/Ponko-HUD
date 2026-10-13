@@ -8,6 +8,7 @@
 import { isLand } from '../landmask.js';
 import { mix, scale } from '../grid.js';
 import { geoLookup } from '../api.js';
+import { t } from '../i18n/index.js';
 
 const D2R = Math.PI / 180;
 
@@ -140,7 +141,11 @@ export class GlobePanel {
     if (!r || r.w < 8 || r.h < 5) return;
     const real = !!(this.selfNode || this.nodes.length || this.temps.length);
 
-    if (!this.dragging) this.yaw = (this.yaw + C.dt * this.speed + 360) % 360;
+    // 自转方向：**地球自西向东转**。观察者是不动的，所以正对观察者的经度应当**递减**
+    // （东边的经线转出去、西边的转进来），球面上的点一律往屏幕右边走。
+    // 以前写成 +，等于让地球自东向西倒着转；拖拽改成"跟手"之后这两者必须同向，
+    // 否则手一松球就往回飘 —— 现在统一为"表面向右走 = 向东转"。
+    if (!this.dragging) this.yaw = (this.yaw - C.dt * this.speed + 360) % 360;
 
     const cols = r.w - 2, rows = r.h - 2;
     const x0 = r.x + 1, y0 = r.y + 1;
@@ -173,10 +178,23 @@ export class GlobePanel {
     lg = Math.min(legend.length, lg, Math.max(0, rows - 6));
     const grows = Math.max(5, rows - lg);
 
+    // ── 球多大：**宽和高哪个小听哪个**。
+    // 以前 u/v 都除以 cols（只按宽度定尺）。分栏态下框又高又窄，碰巧对得上；一旦放大到
+    // 整个内容区（150 列 × 28 行），"28 行折合多少列"只有 61 列，却仍按 150 列定尺 ——
+    // 球被画得比可用高度大两倍多，南北极落在框外，只剩中间一条横带。
+    // 现在先把可用高度折成列（grows 行 × aspect），取 min，球就永远是完整的正圆。
+    const vertCols = grows * aspect;                       // 可用高度折合多少列
+    const span = Math.min(cols, vertCols);                 // 球直径（列单位）
+    const rad = span / 2;                                  // 球半径（列单位）
+    const uOf = (cx) => ((cx + 0.5) - cols / 2) / rad;     // 列 → 球面横坐标 [-1,1]
+    const vOf = (j) => ((grows - j - 0.5) * aspect / 2) / rad;  // 半行 → 球面纵坐标 [-1,1]
+    // 端到端验证要核对"球没被上下裁掉"（放大态最容易出这事），把几何量留一份
+    this._geom = { cols, rows, grows, aspect, vertCols, span, rad, x0, y0 };
+
     const count = this.nodes.length + (this.selfNode ? 1 : 0);
     const right = this._scrollable
       ? `↔ ${this._maxScroll ? Math.round(100 * this.hscroll / this._maxScroll) : 0}%`
-      : (real ? `${count} ip` : '装饰');
+      : (real ? `${count} ip` : t('ui.globe.decor'));
     g.box(r.x, r.y, r.w, r.h, this.focus || this.dragging ? T.accent : T.line, T.panel,
       'GLOBE', T.accent, right);
 
@@ -184,9 +202,12 @@ export class GlobePanel {
     const marks = new Map();                   // "col,row,half" -> {ch, col}
     const put = (p, ch, col) => {
       if (!p || p[2] <= 0.02) return;
-      const cx = Math.round((p[0] + 1) / 2 * (cols - 1));
-      const cy = Math.round((1 - p[1]) / 2 * (grows * 2 - 1));
-      const gx = x0 + cx, gy = y0 + Math.floor(cy / 2), half = cy % 2;
+      // 上面 uOf/vOf 的**反函数**：球按 rad 定尺之后，节点和弧线必须跟着同一把尺子缩放，
+      // 否则放大态下它们会按"填满整个 cols"铺开，跟陆地错位两倍多。
+      const cx = p[0] * rad + cols / 2 - 0.5;
+      const j = grows - 0.5 - p[1] * rad * 2 / aspect;
+      const cy = Math.max(0, Math.min(grows * 2 - 1, Math.round(j)));   // 极点落在半格边缘上，夹回来
+      const gx = x0 + Math.round(cx), gy = y0 + Math.floor(cy / 2), half = cy % 2;
       if (gx < x0 || gx >= x0 + cols || gy < y0 || gy >= y0 + grows) return;
       marks.set(`${gx},${gy},${half}`, { ch, col });
     };
@@ -240,14 +261,16 @@ export class GlobePanel {
       for (const [la, lo] of DECOR_NODES) put(project(la, lo, yaw, pitch), 'o', T.node);
     }
 
-    // ── 球体
+    // ── 球体（只扫球的外接盒：放大态下球只占中间一小条，扫满 cols 是白跑几十倍）
+    const cxLo = Math.max(0, Math.floor(cols / 2 - rad - 1));
+    const cxHi = Math.min(cols, Math.ceil(cols / 2 + rad + 1));
     for (let cy = 0; cy < grows; cy++) {
-      for (let cx = 0; cx < cols; cx++) {
+      for (let cx = cxLo; cx < cxHi; cx++) {
         let top = null, bot = null;
         for (let half = 0; half < 2; half++) {
           const j = cy * 2 + half;
-          const u = ((cx + 0.5) / cols) * 2 - 1;
-          const v = aspect * (grows - j - 0.5) / cols;
+          const u = uOf(cx);
+          const v = vOf(j);
           const hit = unproject(u, v, yaw, pitch);
           if (!hit) continue;
           const [lat, lon, w] = hit;
@@ -283,7 +306,7 @@ export class GlobePanel {
     if (lg === 0 && rows >= 6) {
       const n = real ? this.nodes.length : DECOR_ARCS.length;
       g.text(x0, r.y + r.h - 2, `NETLINK ${n} arcs`, T.dim, T.panel);
-      const lonS = `中心 ${Math.round(((yaw + 180) % 360 + 360) % 360 - 180)}°`;
+      const lonS = t('ui.globe.center', { deg: Math.round(((yaw + 180) % 360 + 360) % 360 - 180) });
       g.text(r.x + r.w - 1 - g.strWidth(lonS), r.y + r.h - 2, lonS, T.dim, T.panel);
     }
   }
@@ -295,7 +318,7 @@ export class GlobePanel {
     const dim = T.dim !== undefined ? T.dim : 0x000000;
     if (!real) {
       // 没有可定位的点：仍然把已知的本机信息列出来，别整块空掉
-      out.push({ g: 'o', c: dim, t: this.geo ? '未取到公网地理 · 离线或受限网络' : '正在获取网络地理…', dim: true });
+      out.push({ g: 'o', c: dim, t: this.geo ? t('ui.globe.noGeo') : t('ui.globe.loading'), dim: true });
       out.push(...this.lanLines(dim));
       return out;
     }
@@ -305,7 +328,7 @@ export class GlobePanel {
     }
     for (const n of this.nodes) {
       const via = n.kind === 'upstream' && n.via ? ` ← ${n.via}` : '';
-      const rtt = n.rtt != null ? `${n.rtt}ms` : '从本机不可直连';
+      const rtt = n.rtt != null ? `${n.rtt}ms` : t('ui.globe.notDirect');
       out.push({
         g: n.kind === 'upstream' ? GLYPH.upstream : GLYPH.dns, c: node,
         t: `${n.kind === 'upstream' ? 'DNS↑' : 'DNS '} ${n.ip}  ${n.city}${via}  ${rtt}`,
@@ -320,9 +343,9 @@ export class GlobePanel {
     const geo = this.geo;
     if (!geo) return [];
     const parts = [];
-    if (geo.lan && geo.lan.length) parts.push(`本机 ${geo.lan[0].ip}`);
+    if (geo.lan && geo.lan.length) parts.push(t('ui.globe.self', { ip: geo.lan[0].ip }));
     const gw = geo.gateway6 && !geo.gateway ? geo.gateway6 : geo.gateway;
-    if (gw) parts.push(`网关 ${gw}`);
+    if (gw) parts.push(t('ui.globe.gateway', { gw }));
     if (geo.gateway && geo.gateway6) parts.push('v6 ' + geo.gateway6.split(':').slice(0, 3).join(':'));
     const lanDns = (geo.dns || []).filter((d) => d.kind === 'lan');
     if (lanDns.length) parts.push(`DNS ${lanDns.map((d) => `${d.ip}${d.rtt != null ? ` ${d.rtt}ms` : ''}`).join(', ')}`);
@@ -361,7 +384,9 @@ export class GlobePanel {
   onMove(cellX, cellY) {
     if (!this.dragging) return false;
     this.userDragged = true;
-    this.yaw = this.dragging.yaw + (cellX - this.dragging.x) * 4;
+    // 跟手：往右拖，球面上的点就得跟着往右走。yaw 是"正对观察者的经度"，球向东转时它
+    // 递减，所以这里是**减**。以前写成 +，手感变成"拖右、球往左"，跟直觉相反。
+    this.yaw = ((this.dragging.yaw - (cellX - this.dragging.x) * 4) % 360 + 360) % 360;
     this.pitch = Math.max(-85, Math.min(85, this.dragging.pitch + (cellY - this.dragging.y) * 2.5));
     return true;
   }

@@ -3,6 +3,9 @@
 import { readFileSync } from 'node:fs';
 import { AgentPanel } from '../app/src/panels/agent.js';
 import { ShellPanel } from '../app/src/panels/shell.js';
+import { availableLangs, langOf, useLang } from '../app/src/i18n/index.js';
+import zhCn from '../app/src/i18n/zh-cn.js';
+import en from '../app/src/i18n/en.js';
 import { Selection } from '../app/src/selection.js';
 import { exitWidth, exitLabel, exitButtonRect } from '../app/src/exitbutton.js';
 import { zoomBtnRect, zoomWidth, fullRect } from '../app/src/zoombtn.js';
@@ -817,17 +820,24 @@ console.log('\n── 12. 放大 / 还原的过场动画（不再一帧到位）
     !builtins.includes('help'), builtins.join(', '));
   chk('改成了 ponko-help', builtins.includes('ponko-help'), builtins.join(', '));
 
-  // 其它内置命令要么带 ponko- 前缀，要么与原生语义一致（clear/cls 都是清屏）
-  const ALLOW = new Set(['clear', 'cls']);
+  // 其它内置命令要么带 ponko- 前缀，要么与原生语义一致（clear/cls 都是清屏）。
+  // lang 是用户点名要的（`lang <lang_id>` 切语言）：它不是 PowerShell/CMD 的内置命令，
+  // 也不是 Windows 上常见的可执行文件（不像 help 那样真有一条原生命令会被盖掉），
+  // 而且只截"整条恰好是 lang 或 lang <一个词>"，`lang a b` 照常发给 shell。
+  const ALLOW = new Set(['clear', 'cls', 'lang']);
   const bad = builtins.filter((b) => !b.startsWith('ponko-') && !ALLOW.has(b));
   chk('不存在其它会遮蔽原生命令的内置命令', bad.length === 0, bad.join(', ') || '（无）');
 
-  // 用户是看欢迎语才知道有这个命令的，提示里的名字必须跟着改
-  const welcome = src.match(/Ponko-HUD shell[^']*/);
-  chk('欢迎语提示的是 ponko-help', !!welcome && welcome[0].includes('ponko-help'),
-    welcome ? welcome[0] : '(没找到欢迎语)');
-  chk('欢迎语不再指向裸 help', !!welcome && !/输入\s+help\b/.test(welcome[0]),
-    welcome ? welcome[0] : '');
+  // 用户是看欢迎语才知道有这个命令的，提示里的名字必须跟着改。
+  // 界面文案已进语言包（2026-10-13）：源码里只剩 key，所以断言改成"key + 两个包的值"。
+  chk('欢迎语走语言包 ui.shell.welcome（源码里不再有成品句子）',
+    /pushT\('info',\s*'ui\.shell\.welcome'\)/.test(src), '');
+  chk('欢迎语提示的是 ponko-help',
+    typeof zhCn['ui.shell.welcome'] === 'string' && zhCn['ui.shell.welcome'].includes('ponko-help')
+    && typeof en['ui.shell.welcome'] === 'string' && en['ui.shell.welcome'].includes('ponko-help'),
+    zhCn['ui.shell.welcome'] + ' / ' + en['ui.shell.welcome']);
+  chk('欢迎语不再指向裸 help', !/输入\s+help\b/.test(zhCn['ui.shell.welcome'] || ''),
+    zhCn['ui.shell.welcome']);
 }
 
 // ── 14. shell 会话退出 → 关掉该标签 ────────────────────────────────────
@@ -934,11 +944,11 @@ console.log('\n── 15. 多标签对话 ──');
   chk('两个对话的色标不是一个颜色',
     Number.isFinite(k0) && Number.isFinite(k1) && k0 !== k1, `${k0}/${k1}`);
 
-  // 框顶线右端：一小排对话色块（要往左让出 'llm' / '未接LLM' 那截状态字）
+  // 框顶线右端：一小排对话色块（要往左让出右上角那截状态字，并跟它空开一列以上）
   const topTxt = rowOf(g, a.rect.y);
-  const hdrW = g.strWidth('未接LLM');
+  const hdrW = g.strWidth(a._hdr);
   const need = 2 * 2 - 1;
-  const mx = (a.rect.x + a.rect.w - 1) - (hdrW + 1) - need;
+  const mx = a._marksX0;
   chk('顶线右端是色标而不是数字', !/[0-9]/.test(topTxt), JSON.stringify(topTxt));
   chk('顶线色标个数 = 对话个数', (topTxt.match(/[█▄]/g) || []).length === 2, JSON.stringify(topTxt));
   const topRow = g.rows.get(a.rect.y) || {};
@@ -947,8 +957,11 @@ console.log('\n── 15. 多标签对话 ──');
   chk('顶线色块用的是各自对话的颜色',
     g.fgAt(mx, a.rect.y) === k0 && g.fgAt(mx + 2, a.rect.y) === k1,
     `${g.fgAt(mx, a.rect.y)}/${g.fgAt(mx + 2, a.rect.y)}`);
-  chk('顶线色标别压到状态字（llm）上', mx + need - 1 < a.rect.x + a.rect.w - 1 - hdrW,
-    `${mx + need - 1} vs ${a.rect.x + a.rect.w - 1 - hdrW}`);
+  const hdrStart = a.rect.x + a.rect.w - 2 - hdrW;      // box() 里 right 就画在这一列
+  chk('顶线色标与右上角状态字之间空开 2 列（贴着会看成一坨）',
+    hdrStart - (mx + need) === 2, `gap=${hdrStart - (mx + need)}`);
+  chk('顶线色标也没压到标题 AGENT',
+    mx > a.rect.x + 2 + g.strWidth('AGENT'), `${mx} vs ${a.rect.x + 2 + g.strWidth('AGENT')}`);
 
   // 颜色跟着对话走，不跟着位置走
   const a4 = new AgentPanel({});
@@ -988,6 +1001,306 @@ console.log('\n── 16. 对话存档不进仓库 ──');
   chk('服务端把存档写在 run/conversations/ 下',
     /path\.join\(ROOT,\s*'run',\s*'conversations'\)/.test(src),
     (src.match(/CONV_DIR\s*=.*/) || [''])[0]);
+}
+
+// ── 17. /del chat：在对话输入框里打命令删当前对话（不靠快捷键）──────────────────
+// 打字表达的是"想删哪一个"，**不是**"现在立刻删"：命中之后面板只把请求交出去（onDelAsk），
+// 由 main.js 弹那道红条，在红条上回车才真删（ESC / 开始打别的字 / 6 秒过期都作废）。
+// 所以这里分两段测：① 命令只请求、不碰存档；② 确认之后的执行器 delChat 才真关。
+// 严进：只认整条输入恰好是 /del chat，别的 /xxx 一律当正文交给模型。
+console.log('\n── 17. /del chat 关对话（打字 → 确认 → 回车）──');
+{
+  // ① 命令本身只"请求确认"：一条都不许删
+  const a = new AgentPanel({});
+  a.newTab();
+  a.tabs[0].msgs = [{ role: 'user', text: '旧对话' }];
+  a.selectTab(1);
+  const idsBefore = a.tabs.map((t) => t.id).join();
+  let asked = 0, closed = 0;
+  a.onDelAsk = () => { asked++; };
+  a.onConvClosed = () => { closed++; };
+
+  chk('send 认出 /del chat 并返回"已处理"', a.send('/del chat') === true, '');
+  chk('只是请求确认：标签一个都没少', a.tabs.map((t) => t.id).join() === idsBefore, a.tabs.map((t) => t.id).join());
+  chk('请求确实交出去了（onDelAsk 被调一次）', asked === 1, String(asked));
+  chk('没确认之前绝不删存档（onConvClosed 没被叫）', closed === 0, String(closed));
+  chk('面板自己不再直接删（delChat 是确认后的执行器，独立存在）', typeof a.delChat === 'function', '');
+  // 命令本身绝不进对话流（既不显示、也不进下一轮的上下文）
+  chk('命令没被当成用户消息塞进对话',
+    a.tabs.every((t) => !t.msgs.some((m) => String(m.text).includes('/del chat'))),
+    JSON.stringify(a.msgs));
+
+  // ② 没有装配钩子（理论上不会）时什么都不做 —— 删存档不能有"静默兜底"
+  const bare = new AgentPanel({});
+  bare.newTab();
+  const bareIds = bare.tabs.map((t) => t.id).join();
+  chk('没有确认钩子时命令被吃掉但什么也不做（宁可没反应，也不能不确认就删）',
+    bare.send('/del chat') === true && bare.tabs.map((t) => t.id).join() === bareIds, bareIds);
+
+  // ③ 确认之后的执行器：关掉一个 —— 标签没了、切到剩下的那个、给主装配回执、旧对话被 dispose
+  const b = new AgentPanel({});
+  b.newTab();
+  b.tabs[0].msgs = [{ role: 'user', text: '旧对话' }];
+  b.selectTab(1);
+  const dying = b.tab;
+  dying.busy = true;
+  let cancelled = 0;
+  dying._cancel = () => { cancelled++; };
+  b._dirty.add(dying);
+  const callbacks = [];
+  b.onConvClosed = (label, kind) => callbacks.push([label, kind]);
+
+  chk('确认后执行 delChat 才真关', b.delChat() === true, '');
+  chk('标签从 2 个变成 1 个', b.tabs.length === 1, String(b.tabs.length));
+  chk('关掉的是正在说话的那个', b.tabs[0].id !== dying.id, `${b.tabs[0].id} vs ${dying.id}`);
+  chk('关掉的对话中止了在飞的请求', cancelled === 1 && dying.busy === false, `${cancelled}/${dying.busy}`);
+  chk('关掉的对话被 dispose（钩子摘掉，不会再往上写）',
+    dying.onDirty === null && dying.onToken === null, `${dying.onDirty}/${dying.onToken}`);
+  chk('关掉的对话不会再被落盘（脏集合里已摘掉）', b._dirty.has(dying) === false, String(b._dirty.size));
+  chk('回执：closed + 关之前那个标题', callbacks.length === 1 && callbacks[0][1] === 'closed',
+    JSON.stringify(callbacks));
+
+  // ④ 没接 LLM 也认得：这条命令跟模型无关，不该被"先弹配置框"挡住
+  const n = new AgentPanel({});
+  n.newTab();
+  n.llmConfigured = false;
+  let askedOk = 0;
+  n.onDelAsk = () => { askedOk++; };
+  n.send('/del chat');
+  chk('没接 LLM 也能请求删（不会先弹配置框）', askedOk === 1 && n.inConfig === false,
+    `${askedOk}/${n.inConfig}`);
+
+  // ⑤ 严进：不认识的 /xxx、带别的话、正文里的斜杠，一律当普通正文，也绝不请求确认
+  const d = new AgentPanel({});
+  d.newTab();
+  const before = d.tabs.length;
+  let askedBad = 0;
+  d.onDelAsk = () => { askedBad++; };
+  for (const s of ['/foo', '/del', '/del chat 吧', '/delchat', '删掉 /del chat', '帮我看下构建为什么失败',
+    'del chat', '/', '  ', '', '/del\tchat  extra']) {
+    chk(`「${s}」不当命令`, d.command(s) === false, String(d.command(s)));
+  }
+  chk('这些都没动标签、也没请求过确认', d.tabs.length === before && askedBad === 0,
+    `${before} → ${d.tabs.length}, asked=${askedBad}`);
+  chk('/del chat 前后的空白无所谓', d.command('  /del chat\n') === true && askedBad === 1,
+    `asked=${askedBad}`);
+  chk('大小写不敏感', d.command('/DEL CHAT') === true && askedBad === 2, `asked=${askedBad}`);
+
+  // ⑥ 普通文本要走原路（不能被吞掉）：没接 LLM 时应当弹出配置框
+  const e = new AgentPanel({});
+  e.llmConfigured = false;
+  e.send('你好');
+  chk('普通文本照旧交给对话（未接 LLM → 弹配置框）',
+    e.inConfig === true && e.msgs.some((m) => m.role === 'user') === false,
+    `${e.inConfig}/${JSON.stringify(e.msgs.map((m) => m.role))}`);
+
+  // ⑦ 没接 LLM 时面板一开就被配置表单盖住，键盘其实落在表单字段上 ——
+  // 那条路也得认这条命令，否则"打 /del chat 就能删"在没配 LLM 的状态下就不成立
+  const f = new AgentPanel({});
+  f.newTab();
+  f.inConfig = true;                                       // 模拟启动时自动弹出的配置框
+  f.form.idx = 0;
+  f.form.fields[0].value = '/del chat';
+  f.form.caret = 9;
+  const fIdBefore = f.tab.id;
+  const fCountBefore = f.tabs.length;
+  let askedForm = 0;
+  f.onDelAsk = () => { askedForm++; };
+  f.configEnter();
+  chk('配置表单字段里打 /del chat 也认（同样只是请求确认）',
+    askedForm === 1 && f.tabs.length === fCountBefore && f.tab.id === fIdBefore,
+    `${askedForm}/${fCountBefore}→${f.tabs.length}/${f.tab.id} vs ${fIdBefore}`);
+  chk('字段里那行命令被擦掉（那是 API 地址的位置）', f.form.fields[0].value === '',
+    JSON.stringify(f.form.fields[0].value));
+  chk('表单没有因为这条命令跳到别的字段', f.form.idx === 0, String(f.form.idx));
+  f.form.fields[0].value = 'https://api.openai.com/v1';
+  f.configEnter();
+  chk('不是命令时表单照常跳到下一个字段', f.form.idx === 1, String(f.form.idx));
+
+  // ⑧ 只剩一个对话：确认后是"清空并换成新的空对话"（也是毁数据，红条会照实说）
+  const c = new AgentPanel({});
+  const oldId = c.tab.id;
+  c.push('user', '要清掉的那段');
+  let cbs = [];
+  c.onConvClosed = (label, kind) => cbs.push([label, kind]);
+  chk('只剩一个时执行 delChat 仍返回 true（换新而不是拒绝）', c.delChat() === true, '');
+  chk('仍是 1 个对话（面板没有"零个对话"状态）', c.tabs.length === 1, String(c.tabs.length));
+  chk('换成了新的对话（旧的连存档一起没了）', c.tab.id !== oldId, `${c.tab.id} vs ${oldId}`);
+  chk('旧对话的内容不会跟过来',
+    !c.msgs.some((m) => String(m.text).includes('要清掉的那段')), JSON.stringify(c.msgs));
+  chk('换掉时回执说的是 replaced', cbs.length === 1 && cbs[0][1] === 'replaced', JSON.stringify(cbs));
+  chk('留下一条说明（顺带告诉用户这条命令存在）',
+    c.msgs.some((m) => String(m.text).includes('/del chat')), JSON.stringify(c.msgs.map((m) => m.role)));
+  chk('说明里说了"回车确认后才删"（别让人以为打完就删）',
+    c.msgs.some((m) => String(m.text).includes('回车确认')), JSON.stringify(c.msgs.map((m) => m.text)));
+  chk('空的说明对话不会被落盘（没有用户消息）',
+    c.msgs.some((m) => m.role === 'user') === false, JSON.stringify(c.msgs.map((m) => m.role)));
+
+  // ⑨ 主装配守卫：打字入口必须在 main.js 合流到那道确认
+  const mjs = readFileSync(new URL('../app/src/main.js', import.meta.url), 'utf8');
+  chk('main.js 把 onDelAsk 接到红条上（打字入口只是"请求"）',
+    /panels\.agent\.onDelAsk\s*=\s*\(\)\s*=>\s*armConvClose\(\)/.test(mjs), '');
+  chk('^⇧W 已删干净（键位分派里没有 W 分支、也没有 armConvClose(\'key\') 这种老路径）',
+    !/k === 'W'/.test(mjs) && !/armConvClose\('key'\)/.test(mjs), '');
+  chk('红条上回车才是执行点，且走的是 delChat（不是 closeTab 的老路）',
+    /function confirmConvClose\(\)[\s\S]{0,400}?a\.delChat\(\)/.test(mjs), '');
+  chk('只剩最后一个时红条换文案（说清会换成新的空对话）',
+    /convClose\.last[\s\S]{0,160}?'ui\.convdel\.last'[\s\S]{0,80}?'ui\.convdel\.one'/.test(mjs)
+    && /清空对话/.test(zhCn['ui.convdel.last'] || '') && /删除对话/.test(zhCn['ui.convdel.one'] || ''),
+    zhCn['ui.convdel.last']);
+  chk('开始打别的字会作废确认（打了半句再发送不会把对话删掉）',
+    /hidden\.addEventListener\('input'[\s\S]{0,600}?convClose = null/.test(mjs), '');
+  chk('main.js 注入了 onConvClosed', /panels\.agent\.onConvClosed\s*=\s*afterConvClosed/.test(mjs), '');
+  chk('onConvClosed 里会作废确认条并把隐藏输入框接到当前对话',
+    /function afterConvClosed[\s\S]{0,400}?convClose = null;[\s\S]{0,400}?syncHidden\(\);/.test(mjs), '');
+
+  // ⑩ 左下角那条提示**只报看不见的东西** —— 界面自己已经在说的事不许再打一行字。
+  // 这条约定是用户明确定的（"不需要在左下角弹状态变化的信息"），锁在这儿防止以后被加回来。
+  const fnBody = (name) => {
+    const i = mjs.indexOf(`function ${name}(`);
+    if (i < 0) return '';
+    let d = 0;
+    for (let k = mjs.indexOf('{', i); k < mjs.length; k++) {
+      if (mjs[k] === '{') d++;
+      else if (mjs[k] === '}' && --d === 0) return mjs.slice(i, k + 1);
+    }
+    return '';
+  };
+  chk('删完对话不弹"已删除"（标签栏少一个就是回执）',
+    fnBody('afterConvClosed') !== '' && !/selToast/.test(fnBody('afterConvClosed')), fnBody('afterConvClosed'));
+  chk('放大/还原不弹"已放大/已还原"（框撑满、按钮变 〼 就是回执）',
+    fnBody('toggleZoom') !== '' && !/selToast/.test(fnBody('toggleZoom')), fnBody('toggleZoom').slice(0, 120));
+  chk('切标签不播报"终端 · xxx · 共 N 个"（标签栏自己亮了）',
+    fnBody('afterTabChange') !== '' && !/selToast/.test(fnBody('afterTabChange'))
+      && fnBody('afterConvChange') !== '' && !/selToast/.test(fnBody('afterConvChange')), '');
+  chk('取消删除不弹"已取消删除"（红条消失就是回执）', !/已取消删除/.test(mjs), '');
+  // 反过来：按了却没发生的、屏幕外发生的操作结果、要你再动一下的，这些**必须**还在
+  chk('按了但没发生的仍说明原因（最后一个对话不能关）',
+    /toast\('ui\.toast\.lastConv'/.test(mjs) && !!zhCn['ui.toast.lastConv'], '');
+  chk('到上限仍说明原因（对话数/标签数已达上限）',
+    /toast\('ui\.toast\.maxConv'/.test(mjs) && /toast\('ui\.toast\.maxTab'/.test(mjs)
+    && !!zhCn['ui.toast.maxConv'] && !!zhCn['ui.toast.maxTab'], '');
+  chk('屏幕外的操作结果仍提示（已复制 N 字符）',
+    /toast\('ui\.toast\.copied',\s*\{\s*n:/.test(mjs) && /\{n\}/.test(zhCn['ui.toast.copied'] || ''),
+    zhCn['ui.toast.copied']);
+  chk('要你再动一下的仍提示（退出两步确认）',
+    /toast\('ui\.toast\.exitArm'/.test(mjs) && /再点一次/.test(zhCn['ui.toast.exitArm'] || ''), '');
+}
+
+// ── 18. 框顶右上角：显示真在用的模型 id（不再写死 "llm"），且与左边的色标空开 ────
+console.log('\n── 18. 右上角状态 = 连接的模型 id ──');
+{
+  const g = mkGrid();
+  const a = new AgentPanel({});
+  a.layout({ x: 3, y: 4, w: 34, h: 13 });        // 分栏态 AGENT 的真实宽度
+  a.newTab();                                    // 两个对话 → 色标占 3 列
+
+  a.draw(g, C);
+  chk('没接 LLM 时说「未接LLM」', a._hdr === '未接LLM', JSON.stringify(a._hdr));
+
+  a.llmConfigured = true;
+  a.llmModel = 'gpt-4o-mini';
+  a.draw(g, C);
+  chk('接上之后右上角就是模型 id', a._hdr === 'gpt-4o-mini', JSON.stringify(a._hdr));
+  chk('不再是写死的 llm / streaming', !/^(llm|streaming)$/.test(a._hdr), JSON.stringify(a._hdr));
+
+  // 流式输出中：底部状态行本来就在报「流式输出中 · N tok/s」，右上角那点地方留给"在跟谁说话"
+  a.tab.busy = true;
+  a.draw(g, C);
+  chk('流式输出中显示的仍是模型 id', a._hdr === 'gpt-4o-mini', JSON.stringify(a._hdr));
+  a.tab.busy = false;
+
+  // 窄框 + 长模型名 → 截断，但要认得出、也不能把色标挤没
+  a.llmModel = 'claude-3-5-sonnet-20241022';
+  a.draw(g, C);
+  chk('放不下就截断并以 … 结尾', a._hdr.endsWith('…') && a._hdr !== '…' && g.strWidth(a._hdr) <= 34 - 10 - 3 - 2,
+    `${JSON.stringify(a._hdr)} w=${g.strWidth(a._hdr)}`);
+  chk('截断了也还认得出是哪个模型', a._hdr.startsWith('claude'), JSON.stringify(a._hdr));
+  chk('截断不会把色标挤没', a._marksX0 !== null, String(a._marksX0));
+
+  // 放大态（整个内容区）不该截断
+  a.layout({ x: 0, y: 2, w: 150, h: 30 });
+  a.draw(g, C);
+  chk('放大态完整显示模型 id（不截断）', a._hdr === 'claude-3-5-sonnet-20241022', JSON.stringify(a._hdr));
+
+  // 对话拉满（色标占 15 列）时：状态字被压到最短，但色标仍画得出来
+  a.layout({ x: 3, y: 4, w: 34, h: 13 });
+  while (a.tabs.length < 8) a.newTab();
+  a.draw(g, C);
+  chk('对话拉满时状态字仍不小于 6 列', g.strWidth(a._hdr) >= 6, `${JSON.stringify(a._hdr)} w=${g.strWidth(a._hdr)}`);
+  chk('对话拉满时色标照样画得出来（不会为了让字而消失）', a._marksX0 !== null, String(a._marksX0));
+
+  // 几何：色标与状态字之间必须空开 2 列，且色标不能压到标题 AGENT
+  a.layout({ x: 3, y: 4, w: 60, h: 16 });
+  a.llmModel = 'gpt-4o-mini';
+  a.draw(g, C);
+  const need = a.tabs.length * 2 - 1;
+  const hdrStart = a.rect.x + a.rect.w - 2 - g.strWidth(a._hdr);
+  chk('色标与右上角状态字之间空开 2 列（贴着会看成一坨）',
+    hdrStart - (a._marksX0 + need) === 2, `gap=${hdrStart - (a._marksX0 + need)}`);
+  chk('色标也没压到标题 AGENT',
+    a._marksX0 > a.rect.x + 2 + g.strWidth('AGENT'), `${a._marksX0} vs ${a.rect.x + 2 + g.strWidth('AGENT')}`);
+
+  // 源码守卫：模型 id 必须是**读回来的**，不是写死的
+  const src = readFileSync(new URL('../app/src/panels/agent.js', import.meta.url), 'utf8');
+  chk('模型 id 从后端配置读回来（getLlmConfig 回填 llmModel）',
+    /getLlmConfig\(\)[\s\S]{0,400}?this\.llmModel\s*=/.test(src), '');
+  chk('保存成功后也同步 llmModel（改了模型右上角立刻换）',
+    /saveLlmConfig\([\s\S]{0,800}?this\.llmModel\s*=\s*r\.model/.test(src), '');
+  chk('源码里不再有写死的 llm / streaming 状态字',
+    !/'llm'/.test(src) && !/busy \? 'streaming'/.test(src), '');
+  chk('间隔是常量而不是魔法数（改布局能一处改掉）', /const HDR_GAP\s*=\s*2/.test(src), '');
+}
+
+console.log('\n── 19. SHELL 的 lang 命令（看 / 换语言）──');
+{
+  const shellSrc = readFileSync(new URL('../app/src/panels/shell.js', import.meta.url), 'utf8');
+  // 截获条件必须是"整条恰好是 lang 或 lang <一个词>"：`lang a b` 得照常发给 shell，
+  // 不能顺手把用户打的东西吞掉（和 /del chat 只认整条命中是同一条规矩）。
+  const m = shellSrc.match(/c === 'lang' \|\| (\/\^lang\[[^\n]*?\$\/)\.test\(c\)/);
+  chk('exec 里有 lang 的截获点（裸 `lang` 走等值判断、`lang <id>` 走这条正则）', !!m, '');
+  if (m) {
+    const re = new RegExp(m[1].slice(1, -1));
+    chk('lang <id> 命中', re.test('lang en'), '');
+    chk('lang a b 不命中（照常发给 shell，不吞用户打的东西）', !re.test('lang a b'), '');
+    chk('language 不命中（不是前缀匹配）', !re.test('language'), '');
+  }
+
+  const s = new ShellPanel({});
+  const out = () => s.lines.map((l) => l.text).join('\n');
+  s.lines.length = 0;
+  await s.exec('lang');
+  const menu = s.lines.map((l) => l.text);
+  chk('lang 报出当前 lang_id', /当前\s*lang_id\s*zh-cn/.test(out()), out());
+  chk('lang 报出用法', /用法\s*lang <lang_id>/.test(out()), out());
+  chk('可切换的 lang_id 逐行列出（一个 id 独占一行，清单来自 i18n、没有第二张表）',
+    availableLangs().map((l) => l.id).every((id) => menu.includes(id)), JSON.stringify(menu));
+  // 用户 2026-10-13：只列 id，不要"id=某种语言"的解释
+  chk('只列 id，不解释 id 是哪种语言（不出现语言自称）',
+    !/简体中文|English|日本語/.test(out()), out());
+
+  s.lines.length = 0;
+  await s.exec('lang en');
+  chk('lang en 真切过去了', langOf() === 'en', langOf());
+  // 回执是在**切换之后**渲染的，所以它用的是新语言（en）—— 这正是"界面文案现取现翻"的证据
+  chk('切完有回执（切到哪 + 偏好已记住）',
+    out().includes('en') && /switched|已切到/.test(out()) && /remembered|记住/.test(out()), out());
+
+  // 大小写不敏感：lang EN / lang En 都该认
+  s.lines.length = 0;
+  await s.exec('lang ZH-CN');
+  chk('lang_id 大小写不敏感', langOf() === 'zh-cn', langOf());
+
+  s.lines.length = 0;
+  await s.exec('lang zz');
+  chk('认不出的 id 不切（语言保持原样）', langOf() === 'zh-cn', langOf());
+  const zzLines = s.lines.map((l) => l.text);
+  chk('认不出的 id 报错并把可切换的 id 再逐行列一遍',
+    s.lines.some((l) => l.kind === 'err' && l.text.includes('没有这个语言包'))
+    && availableLangs().map((l) => l.id).every((id) => zzLines.includes(id)), out());
+
+  useLang('zh-cn');            // 复原，别把后面的测试带跑偏
+  chk('复原成 zh-cn', langOf() === 'zh-cn', langOf());
 }
 
 console.log(`\n${fail === 0 ? '全部通过' : fail + ' 项失败'}`);

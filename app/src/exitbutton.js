@@ -9,24 +9,28 @@
 // 单独成模块的原因：这类 bug 只在"点一下"的那几秒才出现，肉眼容易漏；
 // 放在这里就能在回归里直接断言三态等宽、且文字不被截断。
 
+import { t } from './i18n/index.js';
+
 export const EXIT_STATES = ['idle', 'armed', 'quitting'];
 
-export const EXIT_LABELS = {
-  idle: ' ✕ 退出 ',
-  armed: ' ✕ 再点一次 ',
-  quitting: ' ✕ 退出中… ',
-};
+/**
+ * 三态文案**每次现取**（`t()`），不是模块级常量 —— 常量在 import 那一刻就定死了，
+ * 之后换语言它不会跟着变（模块加载早于 initLang()）。文案进字典后，切语言立刻生效。
+ */
+export function exitLabelText(state) {
+  return t('ui.exit.' + (EXIT_STATES.includes(state) ? state : 'idle'));
+}
 
 /** 三态里最宽的标签宽度 —— 按钮的固定宽度就用它（按当前字体度量，换字号也会跟着变） */
 export function exitWidth(g) {
   let w = 0;
-  for (const k of EXIT_STATES) w = Math.max(w, g.strWidth(EXIT_LABELS[k]));
+  for (const k of EXIT_STATES) w = Math.max(w, g.strWidth(exitLabelText(k)));
   return w;
 }
 
 /** 某个状态的标签文本，左右补空格居中到固定宽度 */
 export function exitLabel(g, state, width) {
-  const s = EXIT_LABELS[state] || EXIT_LABELS.idle;
+  const s = exitLabelText(state);
   const w = width === undefined ? exitWidth(g) : width;
   const pad = Math.max(0, w - g.strWidth(s));
   const l = Math.floor(pad / 2);

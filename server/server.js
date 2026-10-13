@@ -6,6 +6,7 @@
 //                            ★ mood 事件完全由 agent 的正文标记产出，后端不推断情绪
 //   GET  /api/mood/protocol  心情协议：状态枚举 + 可用表情 + 给 LLM 的 system 提示词
 //   GET  /api/charpacks      列出素材包（用户自定义表情）
+//   GET  /api/bootlog        启动记录（宿主 + 后端的真实自检日志，启动画面回放用）
 //   GET  /api/convs          对话存档清单（AGENT 多标签）
 //   GET  /api/conv?s=id      取一个对话全文 / POST 落盘 / POST /api/conv/delete 删除
 //                            ★ 存在 run/conversations/，该目录不入库 → 对话不会被推上 GitHub
@@ -13,7 +14,8 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
+const bootlog = require('./bootlog');
 const sysinfo = require('./sysinfo');
 const netgeo = require('./netgeo');
 const moodp = require('./moodprotocol');
@@ -191,6 +193,98 @@ const ROOT = path.resolve(__dirname, '..');
 const APP = path.join(ROOT, 'app');
 const CHARS = path.join(ROOT, 'characters');
 const PORT = Number(process.env.PONKO_PORT || 8787);
+
+// ─────────────────────────────── 启动自检（真实记录 → 前端启动画面回放）
+//
+// eDEX-UI 开机那套刷屏，这里不要"形式上的假日志"：下面每一行都是这一步真的做了什么、
+// 真的花了多久。数字全部来自现场测量（process.version / 端口 / 文件系统 / 真起一次
+// python -V），没有任何写死的内容 —— 没配 LLM 就说没配，扫不到素材包就说扫不到。
+function hostOf(u) { try { return new URL(u).host || String(u); } catch (e) { return String(u || '?'); } }
+const gb = (n) => (n / 1073741824).toFixed(1);
+const mb = (n) => (n / 1048576).toFixed(2) + 'MB';
+const firstLine = (s) => String(s || '').split('\n')[0].slice(0, 90);
+
+// 素材包：现场扫 characters/，数出来多少就是多少
+function assetStat() {
+  const packs = listCharpacks();
+  let frames = 0, bytes = 0;
+  const moods = new Set();
+  for (const p of packs) {
+    for (const t of Object.keys(p.moods || {})) moods.add(t);
+    const dir = path.join(CHARS, p.id, 'frames');
+    let names = [];
+    try { names = fs.readdirSync(dir); } catch (e) { names = []; }
+    for (const n of names) {
+      if (n === 'preview.html') continue;               // 生成产物，不算帧
+      try { bytes += fs.statSync(path.join(dir, n)).size; frames++; } catch (e) { /* 读不到就跳过 */ }
+    }
+  }
+  return { packs: packs.length, moods: moods.size, frames, bytes };
+}
+
+// 启动日志只记「事件 id + 参数」——渲染成哪种语言由页面按当前语言包决定
+// （见 server/bootlog.js 顶部格式说明、app/src/i18n/*.js）
+bootlog.emit('node', 'boot.node.runtime', {
+  ver: process.version, platform: process.platform, arch: process.arch,
+  pid: process.pid, ppid: process.ppid,
+});
+bootlog.emit('node', 'boot.node.root', { root: ROOT });
+if (bootlog.staleDropped) {
+  bootlog.emit('node', 'boot.node.stale', { n: bootlog.staleDropped });
+}
+
+// LLM 接入：只说"配没配 / 连哪 / 什么协议"，永不回显 Key
+bootlog.emit('llm', llmCfg.configured ? 'boot.llm.on' : 'boot.llm.off', llmCfg.configured
+  ? { host: hostOf(llmCfg.baseUrl), model: llmCfg.model, proto: activeProvider() }
+  : {});
+
+const ASSETS = assetStat();
+bootlog.emit('pack', ASSETS.packs ? 'boot.pack.count' : 'boot.pack.none', ASSETS.packs
+  ? { packs: ASSETS.packs, moods: ASSETS.moods, frames: ASSETS.frames, size: mb(ASSETS.bytes) }
+  : {});
+
+// 真终端：真起一次 python -V —— 探到的就是之后 ConPTY 桥要用的那个解释器。
+// 用 setImmediate 推到 listen 之后：Windows 上创建进程（uv_spawn）有时要几百毫秒甚至
+// 更久，同步跑会把"开始监听"一起拖慢，而启动画面正等着这一下。诊断行不值得拖慢开机。
+const PYBIN = process.env.PONKO_PY || 'python';
+function probePython() {
+  const t0 = Date.now();
+  execFile(PYBIN, ['-V'], { windowsHide: true, timeout: 5000 }, (err, out, errOut) => {
+    const ms = Date.now() - t0;
+    if (err) {
+      bootlog.emit('pty', 'boot.pty.fail', { bin: PYBIN, err: firstLine(err.message) });
+      return;
+    }
+    bootlog.emit('pty', 'boot.pty.ok', {
+      out: String(out || errOut || '').trim() || PYBIN + ' (no version output)',
+      bin: PYBIN, ms,
+    });
+  });
+}
+
+// 系统快照：CPU / 内存 / 系统盘 / GPU 都是现场读的
+(function probeSys() {
+  const s = sysinfo.snapshot();
+  // disk / gpu 是"片段"：交给语言包拼（值以 @key 形式带出去，见 i18n/index.js 第 3 条）
+  const disk = s.disk ? { key: 'boot.sys.diskUsed', args: {
+    used: gb(s.disk.used), total: gb(s.disk.total), pct: s.disk.pct.toFixed(0),
+  } } : '';
+  const gpu = s.gpu ? { key: 'boot.sys.gpuMem', args: {
+    util: s.gpu.util, used: s.gpu.memUsed, total: s.gpu.memTotal,
+  } } : '';
+  bootlog.emit('sys', 'boot.sys.host', {
+    platform: s.platform, arch: s.arch, host: s.host, user: s.user,
+    cpu: s.cpu.model, cores: s.cpu.cores, mem: gb(s.mem.total), disk, gpu,
+  });
+})();
+
+// 对话存档：真的存了几个 —— 这个数就是启动后标签栏会恢复出几个对话
+(function probeConvs() {
+  const cs = listConvs();
+  bootlog.emit('conv', cs.length ? 'boot.conv.count' : 'boot.conv.empty', cs.length
+    ? { n: cs.length, title: String(cs[cs.length - 1].title || 'untitled').slice(0, 24) }
+    : {});
+})();
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -977,6 +1071,8 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, await testLlm(body));
     }
     if (p === '/api/charpacks') return sendJson(res, listCharpacks());
+    // 启动记录：前端启动画面取回去回放（每行都是真事，见 server/bootlog.js）
+    if (p === '/api/bootlog') return sendJson(res, bootlog.snapshot({ port: PORT }));
 
     // 心情协议：state 枚举 + 素材包可用表情 + 可直接塞给 LLM 的 system 提示词
     if (p === '/api/mood/protocol') {
@@ -1123,5 +1219,21 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`Ponko-HUD backend  http://127.0.0.1:${PORT}/`);
-  netgeo.netgeo().catch(() => {});        // 预热：外部地理查询要几秒，别让首次点开地球时干等
+  bootlog.emit('node', 'boot.node.listen', { port: PORT, ms: bootlog.settle() });
+  setImmediate(probePython);              // 端口先开，再慢慢探解释器（见上面注释）
+  // 预热：外部地理查询要几秒，别让首次点开地球时干等。顺带把真实结果记进启动日志
+  netgeo.netgeo().then((g) => {
+    const s = g && g.self;
+    if (s && s.ip) {
+      const where = [s.country, s.region, s.city].filter(Boolean).join(' ') || '@boot.net.unknownPlace';
+      bootlog.emit('net', 'boot.net.egress', {
+        ip: s.ip, where,
+        isp: s.isp || '@boot.net.unknownIsp',
+        as: s.as ? ' · ' + s.as : '',
+      });
+    } else {
+      bootlog.emit('net', 'boot.net.empty');
+    }
+    if (g && (g.dns || []).length) bootlog.emit('net', 'boot.net.dns', { n: g.dns.length, fp: g.fp || '-' });
+  }).catch((e) => bootlog.emit('net', 'boot.net.error', { err: firstLine(e && e.message) }));
 });
