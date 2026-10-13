@@ -2,19 +2,49 @@
 
 English version — [中文版 / Chinese version](README.md)
 
-A full-screen, borderless eDEX-UI-style HUD desktop app (Windows). It draws its own character grid —
-none of Electron's heavy shell.
+> A full-screen, borderless eDEX-UI-style HUD desktop app for Windows. It draws its own character grid — none of Electron's heavy shell.
+
+**Windows** · **Zero third-party dependencies** · **MIT** · UI languages `zh-cn` / `en` / `ja`
+
+## Table of Contents
+
+- [Features](#features)
+- [Running](#running)
+- [Boot self-check](#boot-self-check)
+- [Structure](#structure)
+- [Notes](#notes)
+- [License](#license)
+
+---
 
 ## Features
 
-- **Hand-drawn character grid**: the whole UI is rendered glyph by glyph on Canvas 2D — not assembled from DOM nodes
-- **Boot self-check scroll**: like a kernel boot log, but **every line is real** — the host (single-instance mutex / node path & version / backend pid & handshake timing / WebView2 load / window size), the backend (node & platform / is an LLM configured / asset-pack & frame counts / one real `python -V` probe / system & disk / saved conversations / listening port), and the page (canvas & font metrics / render engine / asset-pack load / restored conversations / real per-endpoint timings) each record their own real steps with their real timings; timestamps are shown verbatim. See "Boot self-check"
-- **Real terminal**: ConPTY-backed PTY, keys passed straight through (modelled on eDEX-UI / xterm.js); runs fully interactive programs like vim / python / htop, Chinese IME included; tabbed terminals, each tab an independent session
-- **Agent chat**: OpenAI-compatible endpoint, streamed output; a config dialog appears inline when nothing is configured. **The top-right corner of the panel shows the model id actually connected right now** (read back from backend config, never hardcoded); with nothing attached it reads `local · no LLM`. Multiple tabs = multiple conversations, auto-saved to `run/conversations/` and restored after a restart; type `/del chat` + `Ctrl+Enter` in the input box for a confirmation line — Enter actually closes the current conversation (archive included, see below)
-- **Live geography globe**: real IP / DNS geolocation, character-dot sphere projection with an auto marquee
-- **Mood character**: a block-character animated avatar whose mood is driven by the agent itself through `[[mood:STATE|face:...]]` markers in its replies
-- **Native window**: pywebview + WebView2, own taskbar identity, own icon, single instance
-- **Dependency-free backend**: plain Node standard library, no third-party packages
+- **Hand-drawn character grid** — the whole UI is rendered glyph by glyph on Canvas 2D, not assembled from DOM nodes
+- **Boot self-check scroll** — it scrolls a screenful of kernel logs on startup, but **every line is real**
+  <details><summary>What each of the three sources records (expand)</summary>
+
+  the host (single-instance mutex / node path & version / backend pid & handshake timing / WebView2 load /
+  window size), the backend (node & platform / is an LLM configured / asset-pack & frame counts / one real
+  `python -V` probe / system & disk / saved conversations / listening port), and the page (canvas & font
+  metrics / render engine / asset-pack load / restored conversations / real per-endpoint timings) — each with
+  its real steps and real timings, timestamps shown verbatim. See "Boot self-check".
+
+  </details>
+- **Real terminal** — ConPTY-backed PTY, keys passed straight through (modelled on eDEX-UI / xterm.js); fully interactive programs like vim / python / htop all run, Chinese IME included; tabbed terminals, each tab an independent session
+- **Agent chat** — OpenAI-compatible endpoint, streamed output. **The top-right corner of the panel shows the model id actually connected right now** (read back from backend config, never hardcoded); with nothing attached it reads `local · no LLM`
+  <details><summary>How conversations are saved and deleted (expand)</summary>
+
+  Multiple tabs = multiple conversations, auto-saved to `run/conversations/` and restored after a restart;
+  type `/del chat` + `Ctrl+Enter` in the input box for a confirmation line — Enter actually closes the current
+  conversation (archive included, see below). A config dialog appears inline when no LLM is configured.
+
+  </details>
+- **Live geography globe** — real IP / DNS geolocation, character-dot sphere projection with an auto marquee
+- **Mood character** — a block-character animated avatar whose mood is driven by the agent itself through `[[mood:STATE|face:...]]` markers in its replies
+- **Native window** — pywebview + WebView2, own taskbar identity, own icon, single instance
+- **Dependency-free backend** — plain Node standard library, no third-party packages
+
+---
 
 ## Running
 
@@ -35,11 +65,21 @@ onto the "window shown" line of `run/boot.log`). Want it even faster while debug
 Quitting: click the `✕ Quit` button at the top-right, or press `Ctrl+Shift+Q` (both need **two clicks /
 presses** to confirm, so you can't quit by accident). `stop.bat` still works from the command line.
 
+---
+
 ## Boot self-check
 
 eDEX-UI scrolls a screenful of kernel logs on boot; this does the same thing, except it only carries
 **real logs** — not one line was written merely to "look like a boot screen". Each of the three sources
 writes its own line at the moment it actually happens, with a real timestamp:
+
+```mermaid
+flowchart LR
+    A["host · native_host.py"] --> L[("run/boot.log")]
+    B["backend · server.js"] --> L
+    L -->|"GET /api/bootlog"| C["page · boot.js"]
+    C --> D["boot screen<br/>line-by-line replay"]
+```
 
 | Source | Written by | What it records |
 | --- | --- | --- |
@@ -82,6 +122,8 @@ not a line-by-line exit). Only once the fade finishes does the HUD's unfold anim
 - **When a behaviour changes, clean up the language-pack strings that describe it too**: switching language
   has taken effect immediately since round 13, yet the reply still read "applies on next launch" — round 15
   added a guard so that stale wording cannot come back.
+
+---
 
 ## Structure
 
@@ -136,6 +178,8 @@ The SHELL panel has its own set of **built-in commands** (typed straight into th
 command of the same name; it only matches "the whole line is exactly `lang` or `lang <one word>`" —
 `lang a b` is handed to the shell as usual, nothing you typed gets eaten.
 
+---
+
 ## Notes
 
 **The bottom hint line only reports things you cannot see.** Deleted a conversation, zoomed/restored a panel,
@@ -158,6 +202,8 @@ SHELL; the switchable ids are listed on the spot; `lang <id>` **retranslates the
 HUD**), and the preference is remembered in the browser (the next launch keeps it).
 Machine paths are hardcoded — after cloning, adjust the directories in `native_host.py` and
 `app/src/main.js` to your own setup.
+
+---
 
 ## License
 
