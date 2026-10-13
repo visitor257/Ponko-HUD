@@ -90,7 +90,7 @@ flowchart LR
 The host and the backend append to **the same file** `run/boot.log` (the host truncates it at every boot,
 so it only holds the current run); the frontend fetches it via `GET /api/bootlog` and replays it line by
 line on the boot screen. The only piece of theatre is that the **gaps** between lines are squeezed into
-~1.7s (otherwise the whole screenful flashes past in an instant) — **the timestamp on each line is real
+~1.5s (otherwise the whole screenful flashes past in an instant) — **the timestamp on each line is real
 and untouched**.
 
 After the last line it pauses ~0.3s so you can read the final screen, then **everything fades out
