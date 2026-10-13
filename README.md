@@ -1,5 +1,7 @@
 # Ponko-HUD
 
+English version — [README.en.md](README.en.md)
+
 全屏无边框的 eDEX-UI 风格 HUD 桌面应用（Windows）。自己动手画的字符网格，没有 Electron 那套重壳。
 
 ## 特性
@@ -59,7 +61,7 @@ eDEX-UI 开机时会滚一屏内核日志；这里做的是同一件事，但只
   缺的落英文而不是落中文，免得半英半中）。简中包 `zh-cn.js` 里两段都是全的，所以简中下
   整个界面与启动画面都是中文；想让别的语言也如此，往那个语言包补同名 key 即可。
   **日语包 `ja.js` 只补了 `ui.*`**（`boot.*` 故意留空）→ 日语下界面是日语、启动画面是英文。
-- 回归：`node tools/test_boot.mjs`（后端每行都能对着现场复算）、`node tools/test_boot_ui.mjs`（版式、打字与收尾淡出、语言包决定句子）、`node tools/test_i18n.mjs`（语言边界：只有 `ui.*`/`boot.*` 能进字典，服务层与识别层不许 import i18n，宿主/后端发的事件 id 必须两个包里都有，`zh-cn` 与 `ja` 的 `ui.*` 必须是"全的" —— 缺一条那条就落到 `en.js` 上、屏幕上会冒出一个英文词）、`python tools/test_boot_host.py`（宿主写的行后端能逐字解析回来）。
+- 回归：`node tools/test_boot.mjs`（后端每行都能对着现场复算）、`node tools/test_boot_ui.mjs`（版式、打字与收尾淡出、语言包决定句子）、`node tools/test_i18n.mjs`（语言边界：只有 `ui.*`/`boot.*` 能进字典，服务层与识别层不许 import i18n，宿主/后端发的事件 id 必须两个包里都有，`zh-cn` 与 `ja` 的 `ui.*` 必须是"全的" —— 缺一条那条就落到 `en.js` 上、屏幕上会冒出一个英文词）、`node tools/test_readme.mjs`（两份 README 必须同构）、`python tools/test_boot_host.py`（宿主写的行后端能逐字解析回来）。
 - **改了某个行为，就回头把语言包里描述这个行为的文案一起清掉**：切语言从第 13 轮起就是当场生效，
   回执却还写着"下次启动时生效" —— 第 15 轮补了守卫，不许这种过时措辞再出现。
 
