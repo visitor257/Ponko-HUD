@@ -8,6 +8,8 @@
 //   3. 背景按行做 span 合并，前景同色连续字符合并成一次 fillText
 //   4. 宽字符（CJK / 全角符号）占 2 列，按 advance 推进并清掉后一格
 
+import { dotsCanvas, dotsKey } from './dots.js';
+
 const BLOCK = new Map([
   ['█', { k: 'full' }],
   ['▀', { k: 'upper' }],
@@ -53,8 +55,11 @@ export class Grid {
   constructor(canvas, opts = {}) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d', { alpha: false });
-    // 等宽字体优先，CJK 由浏览器回退到中文字体（度量仍是 1em ≈ 2 个等宽格，对齐才不会散）
-    this.font = opts.font || '"Cascadia Mono","Cascadia Code","Consolas","Microsoft YaHei","Noto Sans CJK SC",monospace';
+    // 等宽字体优先，CJK 由浏览器回退到中文字体（度量仍是 1em ≈ 2 个等宽格，对齐才不会散）。
+    // 末尾的 "pIqaD qolqoS" 只管克林贡文（U+F8D0 私用区，别的字体一个字形也没有）——
+    // 放在后面当"末位兜底"：拉丁/中文照旧走 Cascadia/雅黑，只有私用区那几个码点会落到它身上。
+    this.font = opts.font
+      || '"Cascadia Mono","Cascadia Code","Consolas","Microsoft YaHei","Noto Sans CJK SC","pIqaD qolqoS",monospace';
     this.fontSize = opts.fontSize || 15;
     this.lineHeight = opts.lineHeight || 1.18;
     this.pad = opts.pad || 0;
@@ -68,6 +73,7 @@ export class Grid {
     this.fade = 1;                 // 内容淡入：1=正常，0=完全融进背景（看不见）
     this.fadeBg = 0;               // fade<1 时前景色混入的目标底色（main 在画面板前设为该面板底色）
     this.fadeAll = false;          // true = 连边框(nofade)和背景一起淡；整块退场时才开（见 zoomanim）
+    this.images = [];              // 图片层：每帧由面板登记，render 末尾统一贴到字符之上
     this.resize();
   }
 
@@ -125,6 +131,14 @@ export class Grid {
     for (const ch of s) n += this.chWidth(ch);
     return n;
   }
+
+  /**
+   * 丢掉字符宽度缓存。**只在字体变了之后调**（目前唯一的地方是 main.js 等 pIqaD 字体到位）。
+   * 为什么要这个：chWidth 是"量一次就记住"，而字体是异步加载的 —— 字体没到之前，
+   * 私用区那几个码点会被量成回退字体（豆腐块）的宽度，一旦缓存住就再也不会更新，
+   * 于是字形到位了、格子还是按豆腐块的宽度排的。
+   */
+  clearWidthCache() { this._wcache.clear(); }
 
   clear(fg = 0x000000, bg = 0x000000) {
     this.chs.fill(' ');
@@ -303,7 +317,87 @@ export class Grid {
         x = x2;
       }
     }
+    this._drawImages();          // 图片层最后画：盖在字符之上
     st.ms = performance.now() - t0;
+  }
+
+  /**
+   * 登记一张图片层：**在字符画完之后**贴上去，绕开字符网格。
+   *
+   * 为什么要这个：角色立绘走字符格时，一块地方就只有「列数 x 行数」个色块
+   * （角色面板 28x19 = 532 格，每格一个 9x18 的纯色方块），精细插画压进去必然糊。
+   * 直接 drawImage 同一块地方就是几万个真实像素 —— 2026-10-15 用户"立绘太糊"的最终解法。
+   *
+   * 参数一律用**格子单位**，内部换算成像素，跟网格严格对齐；
+   * opts: { fit:'contain'|'cover', sat:number }（sat = 降饱和，融进深色主题用）
+   *       { dots:true, pitch:number } —— 点阵化（见 dots.js）：先采样成离屏画布再整块贴
+   */
+  img(x, y, w, h, image, opts = {}) {
+    if (!image) return;
+    this.images.push({
+      x: this.px(x), y: this.py(y), w: w * this.cellW, h: h * this.cellH, image, opts,
+    });
+  }
+
+  /**
+   * 这块地方贴这张点阵图时的**缓存 key**（尺寸算法与下面的 warmImg 逐字相同）。
+   * 用途：调用方先问 key 在不在缓存里，判断"还差多少能画" —— 见 panels/char.js 换形象流程。
+   */
+  artKey(w, h, image, opts = {}) {
+    return dotsKey(image, w * this.cellW, h * this.cellH,
+      { pitch: opts.pitch, sat: opts.sat, dpr: this.dpr });
+  }
+
+  /**
+   * 点阵**预热**：按将来实画时的同一组尺寸把点阵算好并进缓存，但**不画**。
+   *
+   * 为什么需要（2026-10-15 用户："切形象会卡一下"）：采样一张立绘要遍历上万个块、
+   * 再 fillRect 上万次，几毫秒 —— 放在"真要显示它的那一帧"做就会掉帧。
+   * 让调用方在**旧形象还在屏幕上**的时候先算好，切换那一帧就只剩一次 drawImage。
+   * 算完缓存命中，实画零成本。返回本次用的 key（拿不到图时返回 ''）。
+   */
+  warmImg(w, h, image, opts = {}) {
+    if (!image || !opts.dots) return '';
+    const key = this.artKey(w, h, image, opts);
+    dotsCanvas(image, w * this.cellW, h * this.cellH,
+      { pitch: opts.pitch, sat: opts.sat, dpr: this.dpr });
+    return key;
+  }
+
+  _drawImages() {
+    if (!this.images.length) return;
+    const { ctx } = this;
+    ctx.save();
+    if (this.fade < 1) ctx.globalAlpha = this.fade;
+    for (const L of this.images) {
+      const im = L.image;
+      if (!im || !im.width || !im.height) continue;
+      const sat = L.opts.sat == null ? 1 : L.opts.sat;
+      // 点阵化（终端风）：采样成离屏画布是**一次性**的、有缓存，之后每帧只是多贴一张位图
+      // —— 跟直接 drawImage 同价。拿不到就往下走，回退贴原图（跨源、尺寸退化等情况）。
+      if (L.opts.dots) {
+        const cv = dotsCanvas(im, L.w, L.h, { pitch: L.opts.pitch, sat, dpr: this.dpr });
+        if (cv) {
+          // 落点必须对到**整设备像素**、尺寸必须和位图**一模一样** —— 否则浏览器会重采样，
+          // 点阵的方块边被抹成灰，块内就不再是单色了（实测单色块从 ~100% 掉到 6%，
+          // 整个"点阵"退化成一张糊图）。cellW 是小数（8.247…），L.x/L.w 天然带小数尾巴。
+          const q = (v) => Math.round(v * this.dpr) / this.dpr;
+          ctx.drawImage(cv, q(L.x), q(L.y), cv.width / this.dpr, cv.height / this.dpr);
+          this.stats.texts++;
+          continue;
+        }
+      }
+      if (sat !== 1) ctx.filter = `saturate(${sat})`;
+      const s = L.opts.fit === 'cover'
+        ? Math.max(L.w / im.width, L.h / im.height)
+        : Math.min(L.w / im.width, L.h / im.height);
+      const dw = im.width * s, dh = im.height * s;
+      ctx.drawImage(im, L.x + (L.w - dw) / 2, L.y + (L.h - dh) / 2, dw, dh);
+      if (sat !== 1) ctx.filter = 'none';
+      this.stats.texts++;
+    }
+    ctx.restore();
+    this.images.length = 0;
   }
 
   /** 网格坐标 → CSS 像素（给 DOM 覆盖层定位用） */

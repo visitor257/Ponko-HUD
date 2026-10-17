@@ -19,7 +19,9 @@ export default {
   'ui.status.llmOff': 'local · 未接 LLM',
   'ui.hint.zoomOn': '▚ 已放大 {panel} · 点右下角 〼 恢复分栏',
   'ui.hint.zoomOff': '▚ 焦点={focus} · 按住拖选文本 · 地球可拖 · 分割条可拖 · 框右下角 ⛶ 放大',
-  'ui.hotkeys': '[TAB]切换 [^⏎]发送/回车换行 [ESC]退选/中断 [^⇧C]或[^C]复制 [^⇧T]新标签 [^Tab]切标签(随焦点) [^M]心情 [^⇧Q]退出 [滚轮]滚动',
+  // 热键条：`[^M]心情` 那一项已去掉 —— Ctrl+M 在 2026-10-17 随调试功能一起下线
+  //（终端里 ^M 就是回车，容易误触）。热键条要跟着行为走，别留着一条按了没用的提示。
+  'ui.hotkeys': '[TAB]切换 [^⏎]发送/回车换行 [ESC]退选/中断 [^⇧C]或[^C]复制 [^⇧T]新标签 [^Tab]切标签(随焦点) [^⇧Q]退出 [滚轮]滚动',
 
   // ── 底部提示条（toast）：只在"该说一声"的时候出现一下
   'ui.toast.noSelection': '没有选中内容',
@@ -84,13 +86,31 @@ export default {
   'ui.agent.field.apiKey': 'API Key',
   'ui.agent.field.model': '模型名',
   'ui.agent.field.provider': '协议',
-  'ui.agent.field.moodTags': '心情语句',
+  'ui.agent.field.charpack': '形象',
+  // 性格：跟形象同一层（每个对话一份，随存档走）。这是**喂给模型的人设** ——
+  // 决定它情绪表达的路子；「自然」= 不加人设（提示词本身已经写足"有情绪的人"）。
+  // 选项 id 在 agent.js 的 PERSONA_OPTS，必须和 server/moodprotocol.js 的 PERSONAS 一一对应。
+  'ui.agent.field.persona': '性格',
+  'ui.agent.opt.personaDefault': '自然',
+  'ui.agent.opt.personaTsundere': '傲娇',
+  'ui.agent.opt.personaGenki': '元气',
+  'ui.agent.opt.personaSarcastic': '毒舌',
+  'ui.agent.opt.personaGentle': '温柔',
   'ui.agent.opt.auto': '自动识别',
   'ui.agent.opt.openai': 'OpenAI 兼容',
   'ui.agent.opt.anthropic': 'Anthropic',
-  'ui.agent.opt.show': '显示',
-  'ui.agent.opt.hide': '隐藏',
+  // 形象那一栏的「自动」：不是"挑第一个包"，而是保存时让配好的模型自己选一个
+  'ui.agent.opt.charpackAuto': '自动',
+  'ui.agent.form.pickArt': '正在让模型挑选形象…',
+  'ui.agent.form.pickArtFail': '形象没挑成：{err} · 先用默认的（想重挑就再保存一次）',
+  // 自动挑完之后落在对话里的那句（状态行一会儿就没了，这句留得住）
+  'ui.agent.artAuto': '形象：{id}（{model} 自己挑的）',
   'ui.agent.form.hint': '填地址 / Key / 模型后回车保存（会先验证连通）',
+  // 点「+」新建对话时弹的那张表单：只说"改动只影响这一个对话"。
+  // **不写"已按上一个对话预填"** —— 预填的是**按 + 那一刻你正看着的那个对话**那份（见 agent.js 的
+  // _llmOfTab），当前那个没配过就是空表单；一句话既说不准所有情况，也容易被读成"从别处抄了一份"
+  // （2026-10-14 用户指出）。
+  'ui.agent.form.hintNew': '新对话 · 这里的改动只影响这一个对话',
   'ui.agent.form.needBoth': '地址和 Key 都不能为空',
   'ui.agent.form.testing': '正在验证连接…',
   'ui.agent.form.testFail': '连接失败：{err}',
@@ -98,7 +118,7 @@ export default {
   'ui.agent.verifyOk': '验证通过（{ms}ms{via}{pname}）✓ 已保存',
   'ui.agent.form.saveFail': '保存失败：缺少字段',
   'ui.agent.form.saveError': '保存出错：{err}',
-  'ui.agent.form.cantCancel': '未配置时不能取消',
+  'ui.agent.form.hintSkip': '还没配 LLM：这个对话暂时发不出消息 · 输入 /llm 再把配置框叫回来',
   'ui.agent.form.keys': 'TAB/↑↓ 切换 · ←→ 改值 · 回车 保存 · 鼠标点击也可',
   'ui.agent.btn.testing': '[ 验证中 ]',
   'ui.agent.btn.save': '[  保存  ]',
@@ -107,28 +127,20 @@ export default {
   'ui.agent.status.on': '已接入',
 
   // ── MOOD / 主题：状态名、来源标记、兜底说明
-  'ui.mood.idle': '待机',
-  'ui.mood.think': '思考',
-  'ui.mood.stream': '输出',
-  'ui.mood.sleepy': '瞌睡',
-  'ui.mood.error': '出错',
+  // 心情的**名字**（待机/思考/…）不在语言包里 —— 它归角色素材包所有，
+  // 见 characters/<pack>/frames/pack.json 的 moods.<标签>.label 与 mood.js 的 moodLabel()。
+  // 下面这些是**状态说明**（本地兜底时才出现），不是心情名字，所以留在语言包里。
   'ui.mood.srcLocal': '本地兜底',
   'ui.mood.srcManual': '手动',
   'ui.mood.waiting': '等待 agent 接管',
   'ui.mood.manualOverride': '手动覆盖（调试）',
-  'ui.mood.staleAgent': '（本地）agent 没再更新心情',
-  'ui.mood.quiet': '（本地）长时间没有 agent 活动',
-  'ui.theme.idle': '平静 · 待机',
-  'ui.theme.think': '专注 · 思考',
-  'ui.theme.stream': '兴奋 · 输出',
-  'ui.theme.sleepy': '困倦 · 低功耗',
-  'ui.theme.error': '沮丧 · 出错',
 
-  // ── CHAR 面板：框角样式名 / 表情未收录标记 / 历史区标题
+  // ── CHAR 面板：表情未收录标记 / 历史区标题
   //    （'loading…'、'mood N / 100' 本来就是英文，写死不进字典）
-  'ui.char.style': '方块字符',
+  //    这里原先还有一组 ui.char.style*（面板右上角标"高清立绘/点阵立绘/方块字符"）——
+  //    2026-10-15 用户要求去掉，右上角不再显示画法，那组 key 一并删掉。
   'ui.char.missing': ' ✗未收录',
-  'ui.char.history': '情绪历史',
+  // 'ui.char.history' 已删（2026-10-17 用户："情绪历史不需要"，那根曲线与它一起下线）
 
   // ── GLOBE 面板：状态行与图例（IP / 城市名是**数据**，不进字典、也不翻译）
   'ui.globe.decor': '装饰',
@@ -152,6 +164,8 @@ export default {
   'boot.ui.engine.unknown': '未知',
   'boot.ui.layout': '布局完成 · {cols}×{rows} · {panels} 个面板 · {rects} 块矩形',
   'boot.ui.repaint': '整幅重绘 {ms}ms · {cells} 格',
+  // 重启后画面跟关掉时一样：心情快照从 run/ui-state.json 还回来了
+  'boot.ui.moodRestored': '恢复心情快照 {ms} · 此刻 {mood}',
   'boot.pack.loaded': '{id} 装载完成 · {n} 个表情 · 帧按需解码',
   'boot.pack.none': '没找到素材包 → 角色面板这次缺席',
   'boot.sys.ok': 'GET /api/sys {ms} · CPU {cpu}% · 内存 {used}/{total}GB {pct}%{disk}{gpu} · 开机 {up}h',
@@ -193,8 +207,9 @@ export default {
   'boot.node.runtime': 'Node {ver} · {platform} {arch} · pid {pid} · ppid {ppid}',
   'boot.node.root': '项目根 {root}',
   'boot.node.stale': 'boot.log 里另有 {n} 行上次启动的残留，不算进本次',
-  'boot.llm.on': '已接入 {host} · 模型 {model} · 协议 {proto} · Key 已存（不回显）',
-  'boot.llm.off': '未配置 → AGENT 面板里填地址与 Key（只落在本机 server/llm-config.json）',
+  // 配置是**每个对话一份**（不再有全局那份），所以 on 说的是"最近在用的那个对话接了什么"
+  'boot.llm.on': '已接入 {host} · 模型 {model} · 协议 {proto} · Key 已存（每个对话一份）',
+  'boot.llm.off': '扫过 {n} 个对话存档、都没配 → 在 AGENT 面板新建对话时填地址与 Key（每个对话一份）',
   'boot.pack.count': '{packs} 个素材包 · {moods} 个表情 · {frames} 个帧文件 · {size}',
   'boot.pty.fail': '{bin} 起不来（{err}）→ 真终端 /api/pty 不可用，管道模式照常',
   'boot.pty.ok': '{out} · {bin} · 探测 {ms}ms · 桥 server/ptybridge.py',

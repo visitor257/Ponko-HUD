@@ -5,7 +5,6 @@
 //   用法：node tools/test_llm.mjs
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -70,13 +69,14 @@ async function post(pathname, body) {
   });
   return r.json();
 }
-const getCfg = () => fetch(BACK + '/api/llm/config').then((r) => r.json());
+// 配置不再有全局那份（/api/llm/config 已删），只跟**对话存档**走：
+// 所以下面凡是要验证"存下来了吗"，都是往 /api/conv 写一个测试用的对话再读回来。
+const getConv = (id) => fetch(BACK + '/api/conv?s=' + encodeURIComponent(id)).then((r) => r.json());
+const convList = () => fetch(BACK + '/api/convs').then((r) => r.json());
 
 (async () => {
   await new Promise((r) => mock.listen(MOCK_PORT, '127.0.0.1', r));
-  const cfgPath = path.join(ROOT, 'server', 'llm-config.json');
-  const hadCfg = fs.existsSync(cfgPath);
-  const backup = hadCfg ? fs.readFileSync(cfgPath, 'utf8') : null;
+  // 测试用的对话 id：跑完会删掉，绝不留在本机的 run/conversations 里
 
   const backend = spawn(process.execPath, ['server/server.js'], {
     cwd: ROOT, env: { ...process.env, PONKO_PORT: String(BACKEND_PORT) }, stdio: 'ignore',
@@ -88,7 +88,7 @@ const getCfg = () => fetch(BACK + '/api/llm/config').then((r) => r.json());
   }
   if (!up) { console.log('backend 没起来，测试中止'); mock.close(); backend.kill(); process.exit(3); }
 
-  const before = await getCfg();
+  const convsBefore = await convList();
 
   // 1) 地址是乱码 —— 应该立刻被 URL 解析拦下
   let r = await post('/api/llm/test', { baseUrl: '随便乱写asdf', apiKey: GOOD_KEY, model: 'gpt-4o-mini' });
@@ -125,11 +125,12 @@ const getCfg = () => fetch(BACK + '/api/llm/config').then((r) => r.json());
   record('无 /models 时走对话探针', r.ok === true && r.via === 'chat', JSON.stringify(r).slice(0, 90));
   mockMode = 'full';
 
-  // 9) 关键：验证失败不应该写进配置
+  // 9) 关键：验证失败不应该留下任何东西 —— 探测是**纯只读**的，一个文件都不写
   await post('/api/llm/test', { baseUrl: '乱码', apiKey: 'x', model: 'y' });
-  const after = await getCfg();
-  record('失败不落盘', after.configured === before.configured && after.baseUrl === before.baseUrl,
-    `configured=${after.configured} baseUrl=${after.baseUrl}`);
+  const convsAfter = await convList();
+  record('探测纯只读：失败不落任何东西',
+    (convsAfter.convs || []).length === (convsBefore.convs || []).length,
+    `${(convsBefore.convs || []).length} → ${(convsAfter.convs || []).length}`);
 
   // ── Anthropic 分支 ────────────────────────────────
   mockMode = 'anthropic';   // 只认 /v1/messages，OpenAI 两条路径都 404
@@ -152,22 +153,35 @@ const getCfg = () => fetch(BACK + '/api/llm/config').then((r) => r.json());
   r = await post('/api/llm/test', { baseUrl: MOCK_URL, apiKey: 'sk-ant-wrong', model: ANTH_MODEL, provider: 'anthropic' });
   record('Anthropic 错 Key → 鉴权失败', r.ok === false && /鉴权失败/.test(r.error || ''), r.error);
 
-  // 14) 保存后要把识别结果记下来，对话时才不用再猜
-  await post('/api/llm/config', { baseUrl: MOCK_URL, apiKey: ANTH_KEY, model: ANTH_MODEL, provider: 'auto', resolved: 'anthropic' });
-  const savedA = await getCfg();
-  record('保存记住 resolved=anthropic', savedA.configured === true && savedA.resolved === 'anthropic' && savedA.provider === 'auto',
-    JSON.stringify(savedA).slice(0, 110));
   mockMode = 'full';
 
-  // 15) 保存成功的情况（跑完立刻恢复现场，别给仓库留 key）
-  await post('/api/llm/config', { baseUrl: MOCK_URL, apiKey: GOOD_KEY, model: 'gpt-4o-mini', provider: 'openai' });
-  const saved = await getCfg();
-  record('保存后 configured=true', saved.configured === true && saved.resolved === 'openai', JSON.stringify(saved).slice(0, 90));
+  // 14) 配置随**对话存档**走：存进去能原样读回来（含识别出来的 resolved）
+  const TID = 'llmtest-a' + Date.now().toString(36);
+  await post('/api/conv', {
+    id: TID, title: 'llm-config test',
+    msgs: [{ role: 'user', text: 'ping' }],        // 得有一条用户消息，否则后端不落盘
+    llm: { baseUrl: MOCK_URL, apiKey: ANTH_KEY, model: ANTH_MODEL, provider: 'auto', resolved: 'anthropic' },
+  });
+  const savedA = await getConv(TID);
+  record('配置随对话存档存下并能读回（含 resolved）',
+    !!(savedA && savedA.llm && savedA.llm.resolved === 'anthropic' && savedA.llm.baseUrl === MOCK_URL
+      && savedA.llm.apiKey === ANTH_KEY && savedA.llm.provider === 'auto'),
+    JSON.stringify(savedA && savedA.llm).slice(0, 120));
 
-  // 清理：还原/删除测试产生的 llm-config.json
-  try {
-    if (backup !== null) fs.writeFileSync(cfgPath, backup); else fs.unlinkSync(cfgPath);
-  } catch (e) {}
+  // 15) 不完整的配置（缺 Key）不该被当成"配好了"存下来 —— 否则对话时会拿半个配置去连
+  const TID2 = 'llmtest-b' + Date.now().toString(36);
+  await post('/api/conv', {
+    id: TID2, title: 'llm-incomplete',
+    msgs: [{ role: 'user', text: 'ping' }],
+    llm: { baseUrl: MOCK_URL, apiKey: '', model: 'x' },
+  });
+  const saved2 = await getConv(TID2);
+  record('缺 Key 的配置不会被当成配好存下', !!(saved2 && !saved2.llm), JSON.stringify(saved2 && saved2.llm));
+
+  // 清理：删掉这两个测试对话，别往本机的 run/conversations 里留东西
+  for (const id of [TID, TID2]) {
+    try { await post('/api/conv/delete', { id }); } catch (e) {}
+  }
 
   backend.kill();
   // 先掐掉 keep-alive 连接，再等服务器真正关闭；最后不要用 process.exit()

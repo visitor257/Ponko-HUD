@@ -180,6 +180,24 @@ const jget = (url) => fetch(BACK + url).then((r) => r.json());
   const emptyW = await jpost('/api/conv', { id: 'cempty', title: '欢迎', msgs: [{ role: 'agent', text: '已就绪' }] });
   record('没说过话的对话不落盘', emptyW.ok === false, JSON.stringify(emptyW));
 
+  // **但客户端说了"这个标签真的开着"（keep）就得落** ——
+  // 不然"我开着 2 个还没配的标签、关掉 HUD 再开只剩 1 个"就没法避免（2026-10-14 用户报）。
+  const keepW = await jpost('/api/conv', {
+    id: 'ckeep', title: '', keep: true, msgs: [{ role: 'agent', text: '已就绪' }],
+  });
+  record('keep=true 的空对话会落盘（标签栏里真实存在的标签）', keepW.ok === true, JSON.stringify(keepW));
+  const listK = await jget('/api/convs');
+  record('它也出现在清单里（否则重开 HUD 会少一个标签）',
+    (listK.convs || []).some((c) => c.id === 'ckeep'),
+    JSON.stringify((listK.convs || []).map((c) => c.id)));
+  const gotK = await jget('/api/conv?s=ckeep');
+  record('空存档照样能取回（msgs 条数正确、没配 LLM 时 llm 是 null）',
+    Array.isArray(gotK.msgs) && gotK.msgs.length === 1 && gotK.llm === null, JSON.stringify(gotK));
+  record('空存档的标题是空串，不是"新对话"这种界面文案',
+    gotK.title === '', JSON.stringify(gotK.title));
+  const delK = await jpost('/api/conv/delete', { id: 'ckeep' });
+  record('收尾：keep 出来的测试对话已删掉', delK.ok === true, JSON.stringify(delK));
+
   const del = await jpost('/api/conv/delete', { id: CID });
   record('删除对话返回 ok', del.ok === true, JSON.stringify(del));
   const list3 = await jget('/api/convs');

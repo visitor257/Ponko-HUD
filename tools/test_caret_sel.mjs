@@ -6,7 +6,9 @@ import { ShellPanel } from '../app/src/panels/shell.js';
 import { availableLangs, langOf, useLang } from '../app/src/i18n/index.js';
 import zhCn from '../app/src/i18n/zh-cn.js';
 import en from '../app/src/i18n/en.js';
+import ja from '../app/src/i18n/ja.js';
 import { Selection } from '../app/src/selection.js';
+import { TAB_COLORS } from '../app/src/tabcolors.js';
 import { exitWidth, exitLabel, exitButtonRect } from '../app/src/exitbutton.js';
 import { zoomBtnRect, zoomWidth, fullRect } from '../app/src/zoombtn.js';
 import {
@@ -23,6 +25,8 @@ const chk = (name, ok, got) => {
 
 // 真实字体（15px 等宽 + 中文 fallback）实测格宽：⛶/〼 是 2 格，□/■ 是 1 格
 const CH_W = { '⛶': 2, '〼': 2, '□': 1, '■': 1 };
+// LLM 配置是**每个对话一份**的：给对话装一份假的，界面才会画消息（没配的话只弹配置框）
+const FAKE_LLM = { baseUrl: 'http://127.0.0.1:1/v1', apiKey: 'sk-test', model: 'm', provider: 'auto', resolved: '' };
 
 // ── 极简网格替身：只实现面板画字时用到的几个原语，并记录每次 set 的坐标
 function mkGrid() {
@@ -92,6 +96,8 @@ console.log('\n── 2. AGENT 输入行：同样按 caret 定位 ──');
   const a = new AgentPanel({});
   a.layout({ x: 0, y: 0, w: 60, h: 20 });
   a.focus = true;
+  a.tab.llm = { ...FAKE_LLM };     // 配好的对话才是聊天界面；没配的那个停在配置界面（见第 15 节）
+  a.configClose();                 // 配好了就把表单收起来（configSave 验证通过后也是这么收的）
   a.input = '你好 hello';
   const caretCol = (caret) => {
     a.caret = caret; g.sets.length = 0; a.draw(g, C);
@@ -118,7 +124,7 @@ console.log('\n── 3. 配置框：光标位置 + ←→ 归属 ──');
   a.form.fields[0].value = 'https://api.openai.com/v1';
 
   const fieldLine = () => {
-    const y = Object.keys(a._cfg ? {} : {});
+    const y = Object.keys(a._cfgHits ? {} : {});
     return null;
   };
   const drawOnce = (idx, caret) => {
@@ -141,7 +147,7 @@ console.log('\n── 3. 配置框：光标位置 + ←→ 归属 ──');
   chk('协议字段吃 ←→', a.cfgCycleField() === true, a.cfgCycleField());
 
   // 点击某列 → caret 应落到点到那个字符
-  const hits = a._cfg.fields.find((f) => f.key === 'baseUrl');
+  const hits = a._cfgHits.fields.find((f) => f.key === 'baseUrl');
   a.configMouse({ y: hits.y, x: hits.txtStart + 7 });
   chk('点击第 8 列 → caret=7', a.form.caret === 7, a.form.caret);
 
@@ -281,6 +287,8 @@ console.log('\n── 6. AGENT 输入框多行 ──');
   const a = new AgentPanel({});
   a.layout({ x: 0, y: 0, w: 60, h: 20 });
   a.focus = true;
+  a.tab.llm = { ...FAKE_LLM };     // 同上：要画输入框就得是一个配好了的对话
+  a.configClose();
 
   chk('空输入占 1 行', a.inputRows(g) === 1, a.inputRows(g));
   chk('单行文本仍占 1 行', (a.input = 'hello', a.inputRows(g)) === 1, a.inputRows(g));
@@ -341,7 +349,8 @@ console.log('\n── 7. 消息正文的多行 ──');
   const g = mkGrid();
   const a = new AgentPanel({});
   a.layout({ x: 0, y: 0, w: 40, h: 20 });
-  a.llmConfigured = true;
+  a.tab.llm = { ...FAKE_LLM };
+  a.configClose();                 // 要画消息正文就得是聊天形态（未配置的对话停在配置界面）
   a.focus = true;
   a.input = '';
   const rowText = (y) => {
@@ -381,7 +390,8 @@ console.log('\n── 8. 心情语句的显示与开关 ──');
   const g = mkGrid();
   const a = new AgentPanel({});
   a.layout({ x: 0, y: 0, w: 40, h: 20 });
-  a.llmConfigured = true;
+  a.tab.llm = { ...FAKE_LLM };
+  a.configClose();                 // 要画消息正文就得是聊天形态（未配置的对话停在配置界面）
   a.focus = true;
   a.input = '';
   const rowText = (y) => {
@@ -396,44 +406,25 @@ console.log('\n── 8. 心情语句的显示与开关 ──');
     return s.replace(/\s+$/, '');
   };
 
-  chk('默认隐藏：心情语句不显示', a.showMoodTags === false, a.showMoodTags);
-  a.msgs = [];
-  const ev = { t: 'mood', state: 'think', face: 'thinking', raw: '[[mood:think|face:thinking|note:想想]]' };
-  chk('隐藏时 noteMood 不记录', a.noteMood(ev) === false && a.msgs.length === 0, JSON.stringify(a.msgs));
+  // 心情控制语句**一律不进对话流**（2026-10-15 用户要求：那个"显示/隐藏"开关本来就是
+  // 开发时想看一眼用的，删掉了）。协议本身照常生效 —— 这里能验的是"界面上不留痕"。
+  chk('已经不存在"心情语句"那条开关（noteMood / showMoodTags 都删了）',
+    a.noteMood === undefined && a.tab.showMoodTags === undefined,
+    `${String(a.noteMood)} / ${String(a.tab.showMoodTags)}`);
 
-  // 打开：记录并渲染成独立一行
-  a.form.fields[4].value = 'show';
-  a.applyMoodPref();
-  chk('打开后 showMoodTags=true', a.showMoodTags === true, a.showMoodTags);
-  chk('noteMood 记下一条心情语句', a.noteMood(ev) === true, JSON.stringify(a.msgs));
-  chk('记下的是标记原文', a.msgs[a.msgs.length - 1].role === 'mood'
-    && a.msgs[a.msgs.length - 1].text === ev.raw, JSON.stringify(a.msgs[a.msgs.length - 1]));
-
-  g.rows.clear(); a.draw(g, C);
-  chk('心情行以 ♥ 前缀单独成行', rowText(1).startsWith(' ♥ [[mood:'), JSON.stringify(rowText(1)));
-
-  // 关掉开关：协议照常生效，但不再往对话里记
-  a.form.fields[4].value = 'hide';
-  a.applyMoodPref();
-  chk('关掉后 showMoodTags=false', a.showMoodTags === false, a.showMoodTags);
-  const before = a.msgs.length;
-  chk('关掉后不再记录', a.noteMood(ev) === false && a.msgs.length === before, a.msgs.length - before);
-
-  // 关键：已经攒下来的心情行在隐藏时也要**整行消失**，不能只把字抹掉留一条空行
+  // 关键：旧存档里可能还留着 role='mood' 的行 → 读回来必须**整行不生成**，
+  // 不能只把字抹掉留一条空行（正文A 下面直接就是 正文B）
   a.msgs = [];
   a.push('agent', '正文A');
   a.push('mood', '[[mood:think|note:想想]]');
   a.push('agent', '正文B');
   g.rows.clear(); a.draw(g, C);
-  chk('隐藏时历史心情行整行不渲染（正文A 下面直接是 正文B）',
+  chk('历史里的心情行整行不渲染（正文A 下面直接是 正文B）',
     rowText(1) === ' ▌ 正文A' && rowText(2) === ' ▌ 正文B',
     `${JSON.stringify(rowText(1))} / ${JSON.stringify(rowText(2))}`);
   const drawn = [1, 2, 3].map(rowText).filter((s) => s.trim() !== '');
-  chk('隐藏时不出现 ♥ 行也不出现空行', drawn.length === 2 && !drawn.some((s) => s.includes('♥')),
+  chk('不出现 ♥ 行也不出现空行', drawn.length === 2 && !drawn.some((s) => s.includes('♥')),
     JSON.stringify(drawn));
-
-  // 没有原文（本地兜底心情）不该产生空行
-  chk('没有 raw 时不记录', a.noteMood({ t: 'mood', state: 'idle' }) === false, '');
 
   // 历史上下文不能把心情语句回灌给模型：send() 只取 user/agent
   a.msgs = [
@@ -446,13 +437,14 @@ console.log('\n── 8. 心情语句的显示与开关 ──');
     JSON.stringify(picked.map((m) => m.role)));
 
   // 配置框：字段变多后按钮不能压到字段上（按钮行 = 最后一个字段的下一行）
-  a.inConfig = true; a.form.idx = 0;
+  a.configOpen();                       // inConfig 现在是 getter（看当前对话有没有摊开的表单）
   g.rows.clear(); a.draw(g, C);
   // 网格里宽字符占两格（第二格是续位 ~），拼接前要先滤掉
   const textOf = (r) => Object.keys(r).sort((a, b) => a - b)
     .map((k) => (r[k] === '~' ? '' : r[k])).join('');
   const anyRow = (sub) => [...g.rows.values()].some((r) => textOf(r).includes(sub));
-  chk('配置框含「心情语句」字段', anyRow('心情语句'), '');
+  chk('配置框含「形象」字段（原「心情语句」那一栏已删）', anyRow('形象'), '');
+  chk('配置框里没有「心情语句」了', !anyRow('心情语句'), '');
   chk('配置框仍有 保存 / 取消 按钮', anyRow('保存') && anyRow('取消'), '');
 }
 
@@ -907,17 +899,25 @@ console.log('\n── 15. 多标签对话 ──');
   a.nextTab(-1);
   chk('nextTab(-1) 回上一个', a.active === 1, a.active);
 
-  // 心情语句要记进"当前这个对话"，不能串到隔壁
+  // 形象（charpack）是**每个对话一份**的：切标签换人，互相不串
   const a6 = new AgentPanel({});
-  a6.newTab();
-  a6.tabs[0].msgs = []; a6.tabs[1].msgs = [];
-  a6.form.fields[4].value = 'show'; a6.applyMoodPref();
+  a6.newTab();                                    // 先建（那会儿包清单还没到）
+  a6.getPacks = () => [{ id: 'ponko', name: 'ponko' }, { id: 'kuro', name: 'kuro' }];
+  a6.refreshArtOpts();                            // 包加载完，主装配通知一次 → 候选项补齐
+  a6.tabs[0].charpack = 'ponko';
+  a6.tabs[1].charpack = 'auto';
+  chk('形象跟着对话走（各自的 charpack 互不影响）',
+    a6.tabs[0].charpack === 'ponko' && a6.tabs[1].charpack === 'auto',
+    `${a6.tabs[0].charpack}/${a6.tabs[1].charpack}`);
+  a6.selectTab(1);
+  chk('artId()：自动但还没挑 → 空（交给主装配回退默认包）', a6.artId() === '', JSON.stringify(a6.artId()));
+  a6.tabs[1].charpackPicked = 'kuro';
+  chk('artId()：自动 + 已挑 → 用挑出来的那个', a6.artId() === 'kuro', a6.artId());
   a6.selectTab(0);
-  a6.noteMood({ t: 'mood', raw: '[[mood:think]]' });
-  chk('心情语句只记进当前对话',
-    a6.tabs[0].msgs.length === 1 && a6.tabs[1].msgs.length === 0,
-    `${a6.tabs[0].msgs.length}/${a6.tabs[1].msgs.length}`);
-  chk('显示开关同步到了之后新建的对话', a6.tabs[1].showMoodTags === true, String(a6.tabs[1].showMoodTags));
+  chk('artId()：直接选了包 → 就用那个（不受兄弟对话"挑了什么"影响）', a6.artId() === 'ponko', a6.artId());
+  const aopts = a6.form.fields.find((x) => x.key === 'charpack').opts.map((o) => o[0]);
+  chk('形象候选项 = 自动 + 所有已保存的包',
+    JSON.stringify(aopts) === JSON.stringify(['auto', 'ponko', 'kuro']), JSON.stringify(aopts));
 
   // 标签栏绘制 + 命中区（在 AGENT 框**外**：框顶线上面那一行）
   a.selectTab(0);
@@ -988,6 +988,106 @@ console.log('\n── 15. 多标签对话 ──');
     a7.tabs.length === 8 && a7.newTab() === null, String(a7.tabs.length));
   chk('上限内颜色不重复', new Set(a7.tabs.map((t) => t.ci)).size === a7.tabs.length,
     a7.tabs.map((t) => t.ci).join(','));
+
+  // ── 配置框是**挂在对话身上**的：切走是"看不见"，不是"丢弃" ──────────────
+  // （2026-10-14 用户报的两轮：① 点 + 之后不填、直接切到别对话，人还被困在配置界面里；
+  //   ② 改成"切走就删标签"之后用户又指出：不该删，应该还留在配置中。）
+  //   所以定下来的形状是：panel.form 由 tab.cfg 派生，切走只换引用，不动数据。
+  const a8 = new AgentPanel({});
+  a8.tabs[0].llm = { ...FAKE_LLM };                 // 先让第一个对话有份配置可以继承
+  a8.configClose();                                 // 配好就收起（configSave 验证通过后也是这么收的）
+  const n0 = a8.tabs.length;
+  a8.newTab(true);
+  const pending = a8.tab;
+  chk('点「+」建好就弹配置框', a8.inConfig && a8._cfgNew, `${a8.inConfig}/${a8._cfgNew}`);
+  chk('表单里预填着"按 + 时所在的那个对话"那份配置',
+    (a8.form.fields.find((f) => f.key === 'model') || {}).value === 'm', '');
+  chk('没保存之前新对话不算配好（种子不会先落到它身上）', a8.tab.llm === null, String(a8.tab.llm));
+  // 先改一个字段，待会儿靠它认"是不是原来那份表单"
+  a8.form.fields.find((f) => f.key === 'model').value = 'my-model';
+  a8.form.idx = 2;
+
+  a8.selectTab(0);                                  // 不配，直接点回第一个对话
+  chk('切走后落在这个对话上，且**不再**是配置界面', a8.tab === a8.tabs[0] && !a8.inConfig,
+    `${a8.active}/${a8.inConfig}`);
+  chk('那个对话还在（切走不等于丢弃）', a8.tabs.includes(pending) && a8.tabs.length === n0 + 1,
+    String(a8.tabs.length));
+  chk('表单跟着对话留着（切走时什么都不擦）',
+    pending.cfg && pending.cfg.fields.find((f) => f.key === 'model').value === 'my-model', '');
+  a8.selectTab(a8.tabs.indexOf(pending));           // 切回来
+  chk('切回来还在配置中（不是回到空输入框）', a8.inConfig === true, String(a8.inConfig));
+  chk('切回来填的东西还在',
+    a8.form.fields.find((f) => f.key === 'model').value === 'my-model', '');
+  chk('连焦点停在第几行都还是原来那样', a8.form.idx === 2, String(a8.form.idx));
+  chk('新建标记也还在（这时取消仍然 = 撤销新建）', a8._cfgNew === true, String(a8._cfgNew));
+
+  // ^Tab（nextTab）那条路一样
+  a8.nextTab(1);
+  chk('^Tab 切走同样是"看不见"而不是删除', !a8.inConfig && a8.tabs.includes(pending), String(a8.inConfig));
+  a8.nextTab(1);
+  chk('^Tab 切回来也还在配置中', a8.inConfig && a8.tab === pending, String(a8.inConfig));
+
+  // 两个对话同时处在"配置中"：各读各的，互不覆盖
+  // 内部新建（/del chat 之后补的那种）：同样没配 LLM → 一样停在配置界面
+  const other = a8.newTab(false);
+  chk('内部新建的对话也没配 → 同样停在配置界面', a8.inConfig && other.cfg !== null, String(a8.inConfig));
+  chk('它是"自己摊开的"那份（不是人手点出来的新建态）',
+    other.cfg.auto === true && other.cfg.isNew === false, `${other.cfg.auto}/${other.cfg.isNew}`);
+  a8.configOpen();                                  // 编辑当前这个已有对话 → 自己的表单
+  a8.form.fields.find((f) => f.key === 'model').value = 'second';
+  a8.selectTab(a8.tabs.indexOf(pending));
+  chk('切到另一个"配置中"的对话：看到的是它自己那份表单',
+    a8.form.fields.find((f) => f.key === 'model').value === 'my-model', '');
+  a8.selectTab(a8.tabs.indexOf(other));
+  chk('切回去看到的是另一个那份（两边各存各的）',
+    a8.form.fields.find((f) => f.key === 'model').value === 'second', '');
+  chk('同时两个对话都在配置中也不冲突', !!(pending.cfg && other.cfg), '');
+
+  // 取消：只有它自己被收起，别的那份不动
+  a8.selectTab(a8.tabs.indexOf(pending));
+  a8.configCancel();
+  chk('取消一个：只有它被撤销', !a8.tabs.includes(pending) && a8.tabs.includes(other), '');
+  chk('别的那个仍在配置中（表单没跟着一起没）', other.cfg !== null, String(other.cfg));
+
+  // ── 未配置的对话一律停在配置界面（含冷启动那个）────────────────────────
+  // （2026-10-14 用户报：只有一个未配置的标签页，关掉 HUD 再开，看到的却是对话界面。
+  //   未配置的对话早就被卡住 —— 一句话发出去也会被弹回配置框（见 AgentConv.send）,
+  //   所以摆一个能打字的空聊天框是在骗人；让它停在配置界面才是真的形状。
+  //   注意"重启"这件事本身不会留下什么：没说过话又没配置过的对话根本不落盘，
+  //   下次起来的是一个全新的空对话 —— 靠这条规则它仍然落在配置界面上。）
+  const a9 = new AgentPanel({});
+  chk('冷启动：那个对话没配 LLM → 面板就是配置界面', a9.inConfig === true, String(a9.inConfig));
+  chk('这份表单是"自己摊开"的，不是人手点 + 建出来的',
+    a9.form.auto === true && a9.form.isNew === false, `${a9.form.auto}/${a9.form.isNew}`);
+  // 循环字段（协议 / 形象 / 性格）本来就有值，判"空白"时按各自的默认档算，
+  // 别的一律要求空串 —— 这样"偷偷继承了别人的性格"也会被抓到。
+  const CYCLE_DEFAULT_9 = { provider: 'auto', charpack: 'auto', persona: 'default' };
+  chk('起手那份是空表单（当前这个对话没配过，就没得继承）',
+    a9.form.fields.every((f) => (f.key in CYCLE_DEFAULT_9)
+      ? f.value === CYCLE_DEFAULT_9[f.key] : f.value === ''),
+    JSON.stringify(a9.form.fields.map((f) => f.value)));
+  chk('冷启动不会偷偷替它配好（种子不落到 tab.llm 上）', a9.tab.llm === null, String(a9.tab.llm));
+
+  const only = a9.tab;
+  a9.configCancel();
+  chk('只剩它一个时取消 = 收起表单（面板没有"零个对话"状态）',
+    a9.tabs.length === 1 && a9.tab === only && only.cfg === null, String(a9.tabs.length));
+  chk('收起时留一句说明：它还不能用、怎么回来',
+    only.msgs.some((m) => m.k === 'ui.agent.form.hintSkip'), JSON.stringify(only.msgs.map((m) => m.k)));
+  chk('这句说明不会把空对话写进存档（里面没有用户消息）',
+    only.msgs.some((m) => m.role === 'user') === false, '');
+  chk('收起后它仍然是发不出消息的（普通文本被弹回配置框）',
+    (a9.send('你好'), a9.inConfig === true && a9.msgs.some((m) => m.role === 'user') === false), '');
+
+  a9.configClose();
+  a9.send('/llm');
+  chk('/llm 能把配置框叫回来', a9.inConfig === true && a9.form.idx === 0, String(a9.form.idx));
+  a9.form.fields.find((f) => f.key === 'model').value = 'half-typed';
+  a9.configClose(); a9.send('/llm');
+  chk('收起 = 明确"这次不用了"，所以叫回来的是一份新表单（区分于切走那种"还在配"）',
+    a9.form.fields.find((f) => f.key === 'model').value === '',
+    JSON.stringify(a9.form.fields.find((f) => f.key === 'model').value));
+  chk('/llm 不是新建态（取消不会把它删掉）', a9.form.isNew === false, String(a9.form.isNew));
 }
 
 // ── 16. 对话存档不能被推上 GitHub ────────────────────────────────────────
@@ -1063,12 +1163,10 @@ console.log('\n── 17. /del chat 关对话（打字 → 确认 → 回车）�
   // ④ 没接 LLM 也认得：这条命令跟模型无关，不该被"先弹配置框"挡住
   const n = new AgentPanel({});
   n.newTab();
-  n.llmConfigured = false;
   let askedOk = 0;
   n.onDelAsk = () => { askedOk++; };
   n.send('/del chat');
-  chk('没接 LLM 也能请求删（不会先弹配置框）', askedOk === 1 && n.inConfig === false,
-    `${askedOk}/${n.inConfig}`);
+  chk('没接 LLM 也认这条命令（不会被拦截）', askedOk === 1, String(askedOk));
 
   // ⑤ 严进：不认识的 /xxx、带别的话、正文里的斜杠，一律当普通正文，也绝不请求确认
   const d = new AgentPanel({});
@@ -1088,7 +1186,6 @@ console.log('\n── 17. /del chat 关对话（打字 → 确认 → 回车）�
 
   // ⑥ 普通文本要走原路（不能被吞掉）：没接 LLM 时应当弹出配置框
   const e = new AgentPanel({});
-  e.llmConfigured = false;
   e.send('你好');
   chk('普通文本照旧交给对话（未接 LLM → 弹配置框）',
     e.inConfig === true && e.msgs.some((m) => m.role === 'user') === false,
@@ -1098,8 +1195,7 @@ console.log('\n── 17. /del chat 关对话（打字 → 确认 → 回车）�
   // 那条路也得认这条命令，否则"打 /del chat 就能删"在没配 LLM 的状态下就不成立
   const f = new AgentPanel({});
   f.newTab();
-  f.inConfig = true;                                       // 模拟启动时自动弹出的配置框
-  f.form.idx = 0;
+  f.configOpen();                                          // 模拟启动时自动弹出的配置框
   f.form.fields[0].value = '/del chat';
   f.form.caret = 9;
   const fIdBefore = f.tab.id;
@@ -1198,8 +1294,8 @@ console.log('\n── 18. 右上角状态 = 连接的模型 id ──');
   a.draw(g, C);
   chk('没接 LLM 时说「未接LLM」', a._hdr === '未接LLM', JSON.stringify(a._hdr));
 
-  a.llmConfigured = true;
-  a.llmModel = 'gpt-4o-mini';
+  // 每个对话一份配置：装进去之后，右上角显示的就是这份里的模型 id
+  a.tab.llm = { ...FAKE_LLM, model: 'gpt-4o-mini' };
   a.draw(g, C);
   chk('接上之后右上角就是模型 id', a._hdr === 'gpt-4o-mini', JSON.stringify(a._hdr));
   chk('不再是写死的 llm / streaming', !/^(llm|streaming)$/.test(a._hdr), JSON.stringify(a._hdr));
@@ -1211,7 +1307,7 @@ console.log('\n── 18. 右上角状态 = 连接的模型 id ──');
   a.tab.busy = false;
 
   // 窄框 + 长模型名 → 截断，但要认得出、也不能把色标挤没
-  a.llmModel = 'claude-3-5-sonnet-20241022';
+  a.tab.llm.model = 'claude-3-5-sonnet-20241022';   // llmModel 是 getter，改配置里的 model
   a.draw(g, C);
   chk('放不下就截断并以 … 结尾', a._hdr.endsWith('…') && a._hdr !== '…' && g.strWidth(a._hdr) <= 34 - 10 - 3 - 2,
     `${JSON.stringify(a._hdr)} w=${g.strWidth(a._hdr)}`);
@@ -1232,7 +1328,8 @@ console.log('\n── 18. 右上角状态 = 连接的模型 id ──');
 
   // 几何：色标与状态字之间必须空开 2 列，且色标不能压到标题 AGENT
   a.layout({ x: 3, y: 4, w: 60, h: 16 });
-  a.llmModel = 'gpt-4o-mini';
+  // 上一步新建了一堆标签，当前这个没有配置 → 整个装一份（不能再只改 model 字段）
+  a.tab.llm = { ...FAKE_LLM, model: 'gpt-4o-mini' };
   a.draw(g, C);
   const need = a.tabs.length * 2 - 1;
   const hdrStart = a.rect.x + a.rect.w - 2 - g.strWidth(a._hdr);
@@ -1243,13 +1340,58 @@ console.log('\n── 18. 右上角状态 = 连接的模型 id ──');
 
   // 源码守卫：模型 id 必须是**读回来的**，不是写死的
   const src = readFileSync(new URL('../app/src/panels/agent.js', import.meta.url), 'utf8');
-  chk('模型 id 从后端配置读回来（getLlmConfig 回填 llmModel）',
-    /getLlmConfig\(\)[\s\S]{0,400}?this\.llmModel\s*=/.test(src), '');
-  chk('保存成功后也同步 llmModel（改了模型右上角立刻换）',
-    /saveLlmConfig\([\s\S]{0,800}?this\.llmModel\s*=\s*r\.model/.test(src), '');
+  // 配置是**每个对话一份**的：模型 id 得从当前对话那份里现取，不再是面板级的一个字段
+  chk('模型 id 从当前对话的配置里现取（getter，不是面板级字段）',
+    /get llmModel\(\)[\s\S]{0,160}?this\.tab\.llm[\s\S]{0,80}?\.model/.test(src), '');
+  chk('对话恢复时把各自的配置带回来（每个对话一份）',
+    /if \(c\.llm\)\s*\{\s*t\.llm\s*=\s*\{\s*\.\.\.c\.llm\s*\}/.test(src), '');
+  chk('新建对话拿"按 + 那一刻正看着的那个对话"预填表单',
+    /newTab\(fromUser\)[\s\S]{0,900}?configOpen\(\{\s*isNew:\s*true,\s*seed/.test(src), '');
+  chk('预填来源只有这一条：_llmOfTab(当前对话)，没有"最近配好的那份"当兜底',
+    /const src = this\.tab;[\s\S]{0,200}?const seed = this\._llmOfTab\(src\)/.test(src) && !/_lastLlm/.test(src), '');
+  chk('预填只是**拷一份**（改新对话不该动到老对话那份）',
+    /return \(tab && tab\.llm\) \? \{ \.\.\.tab\.llm \} : null;/.test(src), '');
+  chk('种子不落进新对话（没保存就不算配好，也就不会被写盘）',
+    !/fromUser && seed\)\s*t\.llm\s*=/.test(src), '');
+  chk('新建流程点取消 = 删掉刚建的那个标签',
+    /configCancel\(\)[\s\S]{0,600}?closeTab\(this\.tabs\.indexOf\(victim\)\)/.test(src), '');
+  chk('配置表单挂在**对话**上（tab.cfg），不再是一整个面板共一份',
+    /get form\(\)\s*\{\s*return \(this\.tab && this\.tab\.cfg\) \|\| null;/.test(src)
+    && /this\.cfg = null;/.test(src), '');
+  chk('inConfig 由"当前对话有没有摊开的表单"派生（不允许再有人直接赋值）',
+    /get inConfig\(\)\s*\{\s*return !!this\.form;/.test(src)
+    && !/this\.inConfig\s*=/.test(src), '');
+  chk('切标签不许再动表单：selectTab / nextTab 里没有清 cfg 的动作',
+    !/selectTab\(i\)[\s\S]{0,400}?tab\.cfg\s*=/.test(src)
+    && !/nextTab\(dir\)[\s\S]{0,400}?tab\.cfg\s*=/.test(src), '');
+  chk('撤销新建只剩一个入口：configCancel（它对别的对话那份表单没有副作用）',
+    /configCancel\(\)[\s\S]{0,500}?this\.closeTab\(this\.tabs\.indexOf\(victim\)\)/.test(src), '');
+  chk('没配 LLM 的对话都会停在配置界面：内部新建 / 恢复存档两条路都走同一个入口',
+    /else this\._openFormIfUnset\(t,/.test(src)
+    && /this\._openFormIfUnset\(t, prevLlm/.test(src), '');
+  chk('取消不再把人困住（旧的"未配置不许取消"已经没了）',
+    !/cantCancel/.test(src) && !/form\.cantCancel/.test(src), '');
+  // /llm 这个命令名里的 'llm' 不是状态字 —— 挖掉它再扫，别让守卫空转也不要误伤
+  const hd = src.replace(/name === 'llm'[^\n]*/g, '');
   chk('源码里不再有写死的 llm / streaming 状态字',
-    !/'llm'/.test(src) && !/busy \? 'streaming'/.test(src), '');
+    !/'llm'/.test(hd) && !/busy \? 'streaming'/.test(hd), '');
   chk('间隔是常量而不是魔法数（改布局能一处改掉）', /const HDR_GAP\s*=\s*2/.test(src), '');
+
+  // ── 标签数必须在"关掉 HUD 再开"之后对得上（2026-10-14 用户报）──────────
+  chk('用户点「+」建的标签会记账（keepOpen）+ 立刻排落盘',
+    /if \(fromUser\) \{ t\.keepOpen = true; this\._markDirty\(t\); \}/.test(src), '');
+  chk('落盘时把 keep 一起报给后端（否则后端会把"空对话"直接丢掉）',
+    /saveConv\(\{[^}]*keep: !!conv\.keepOpen[^}]*\}\)/.test(src), '');
+  chk('恢复存档时空格对话也收（不再要求 msgs.length > 0）',
+    /if \(c && Array\.isArray\(c\.msgs\)\) loaded\.push\(c\)/.test(src)
+    && !/Array\.isArray\(c\.msgs\) && c\.msgs\.length/.test(src), '');
+  chk('一个存档都没恢复出来时，起手那个标签也要记进存档（_keepBootTab）',
+    /_keepBootTab\(\)\s*\{[\s\S]{0,420}?t\.keepOpen = true;[\s\S]{0,120}?this\._markDirty\(t\)/.test(src), '');
+  chk('恢复出来的对话也标成 keep（以后落盘不会因为"空"被丢掉）',
+    /t\.keepOpen = true;\s*\/\/[^\n]*\n/.test(src), '');
+  chk('存档标题不存界面文案：saveTitle() 给空串，title() 才补「新对话」',
+    /saveConv\(\{[^}]*title: conv\.saveTitle\(\)/.test(src)
+    && /title\(\) \{ return this\.saveTitle\(\) \|\| t\('ui\.agent\.newConv'\); \}/.test(src), '');
 }
 
 console.log('\n── 19. SHELL 的 lang 命令（看 / 换语言）──');
@@ -1301,6 +1443,231 @@ console.log('\n── 19. SHELL 的 lang 命令（看 / 换语言）──');
 
   useLang('zh-cn');            // 复原，别把后面的测试带跑偏
   chk('复原成 zh-cn', langOf() === 'zh-cn', langOf());
+}
+
+console.log('\n── 20. 标签数在「关掉 HUD 再开」之后对得上（用户 2026-10-14 报）──');
+{
+  // 收掉待落盘的定时器：这里是纯逻辑验证，别让 flushSaves 去打一个不存在的后端
+  const stop = (p) => { p._dirty.clear(); if (p._saveTimer) { clearTimeout(p._saveTimer); p._saveTimer = null; } };
+  // 用户点「+」建出来的标签是"他真的要这个对话" → 立刻记账（keepOpen）+ 排一次落盘。
+  // 不这样做的话，没配完就关掉 HUD，那个标签连存档都没有，再开就少一个。
+  const a = new AgentPanel({});
+  a.tabs[0].llm = { ...FAKE_LLM };
+  const boot = a.tab;
+  chk('起手那个标签默认没记账（内部新建的不算"用户开的"）', boot.keepOpen === false, String(boot.keepOpen));
+  const made = a.newTab(true);
+  chk('点「+」建的标签立刻记账', made.keepOpen === true, String(made.keepOpen));
+  chk('并且排了落盘（不然"建完立刻关 HUD"就白建）', a._dirty.has(made), String(a._dirty.size));
+  chk('内部新建（/del chat 补的那个）不记账', a.newTab(false).keepOpen === false, '');
+  stop(a);
+}
+
+console.log('\n── 21. 空存档也能恢复成标签（stub 掉接口，纯逻辑验证）──');
+{
+  const realFetch = globalThis.fetch;
+  // 造一个假后端：只回答对话列表与单个对话，两个都是"空对话"（没说过话、没配 LLM）
+  const mkFetch = (ids) => async (url) => {
+    const u = String(url);
+    if (u.startsWith('/api/convs')) {
+      return { json: async () => ({ convs: ids.map((id, i) => ({ id, title: '', updatedAt: i + 1, count: 0 })), max: 8 }) };
+    }
+    const m = /[?&]s=([^&]+)/.exec(u);
+    return { json: async () => ({ id: m ? decodeURIComponent(m[1]) : '', title: '', msgs: [], llm: null }) };
+  };
+  const stop = (p) => { p._dirty.clear(); if (p._saveTimer) { clearTimeout(p._saveTimer); p._saveTimer = null; } };
+  try {
+    globalThis.fetch = mkFetch(['c-e1', 'c-e2']);
+    const b = new AgentPanel({});
+    b.tabs[0].llm = { ...FAKE_LLM };
+    await b.restore();
+    chk('两个空存档 → 恢复出两个标签（不再缩成一个）', b.tabs.length === 2, String(b.tabs.length));
+    chk('空对话也各自带回自己的 id', b.tabs.map((t) => t.id).join(',') === 'c-e1,c-e2',
+      b.tabs.map((t) => t.id).join(','));
+    chk('恢复出来的都记了账（以后落盘仍带 keep，不会被判成空对话丢掉）',
+      b.tabs.every((t) => t.keepOpen), String(b.tabs.map((t) => t.keepOpen)));
+    chk('没配 LLM → 落在配置界面上，不是聊天界面', b.inConfig === true && b.tab.cfg !== null, String(b.inConfig));
+    chk('落在最近更新的那个上（最后一个）', b.tab.id === 'c-e2', b.tab.id);
+    stop(b);
+
+    // 一个存档都没有（第一次开 / 存档被删光）：起手那个标签也得记进存档
+    globalThis.fetch = mkFetch([]);
+    const c = new AgentPanel({});
+    const boot2 = c.tab;
+    chk('恢复之前不记账（避免每次开都多写一个空存档）', boot2.keepOpen === false, String(boot2.keepOpen));
+    await c.restore();
+    chk('一个存档都没有时，起手那个标签被记账', boot2.keepOpen === true, String(boot2.keepOpen));
+    chk('它同时排了落盘（下次开 HUD 就恢复出它，标签数不缩水）', c._dirty.has(boot2), String(c._dirty.size));
+    chk('它仍停在配置界面', c.inConfig === true && boot2.cfg !== null, String(c.inConfig));
+    chk('还是只有一个标签（不会因为记账就多生一个）', c.tabs.length === 1, String(c.tabs.length));
+    stop(c);
+  } finally { globalThis.fetch = realFetch; }
+}
+
+console.log('\n── 22. 点「+」预填的是"按 + 时所在的那个对话"，不是别处那份（用户 2026-10-14 指出）──');
+{
+  // 用户原话："这个上一个会话，是不是指按 + 时所在的会话，而不是最后创建的那个会话？
+  //          应该是按 + 时所在的会话才对"。
+  // 所以规矩钉死成一条：**谁在眼前就用谁那份**（配置框开着就以框里的为准），
+  // 眼前这个没配过就留空 —— 不许拿"最近配好的那份"顶上（那会让人以为点错了对话）。
+  const realFetch = globalThis.fetch;
+  const A = { baseUrl: 'http://127.0.0.1:3/v1', apiKey: 'sk-AAA', model: 'model-a', provider: 'openai', resolved: 'openai' };
+  const meta = [{ id: 'c-p1', llm: A }, { id: 'c-p2' }];
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.startsWith('/api/convs')) {
+      return { json: async () => ({ convs: meta.map((m, i) => ({ id: m.id, title: '', updatedAt: i + 1, count: 0 })), max: 8 }) };
+    }
+    const mm = /[?&]s=([^&]+)/.exec(u);
+    const id = mm ? decodeURIComponent(mm[1]) : '';
+    const rec = meta.find((x) => x.id === id) || {};
+    return { json: async () => ({ id, title: '', msgs: [], llm: rec.llm || null }) };
+  };
+  const stop = (p) => { p._dirty.clear(); if (p._saveTimer) { clearTimeout(p._saveTimer); p._saveTimer = null; } };
+  // 「空白表单」的判据：文本字段为空，**循环字段**停在各自的默认档
+  // （provider=auto、charpack=auto、persona=default —— 这三栏本来就总有值，不算"预填了东西"）。
+  // 用表而不是"key 命中就放行"：这样循环字段被预填成**非默认值**时也抓得住。
+  const CYCLE_DEFAULTS = { provider: 'auto', charpack: 'auto', persona: 'default' };
+  const blank = (f) => f.fields.every((x) => (x.key in CYCLE_DEFAULTS)
+    ? x.value === CYCLE_DEFAULTS[x.key]
+    : x.value === '');
+  const val = (f, k) => (f.fields.find((x) => x.key === k) || {}).value;
+  const valSet = (f, k, v) => { const x = f.fields.find((y) => y.key === k); if (x) x.value = v; };
+  try {
+    const p = new AgentPanel({});
+    p.tabs[0].llm = { ...A };              // 起手那个标签先"配好"（restore 之后会被存档顶掉）
+    await p.restore();
+    const one = p.tabs.find((t) => t.id === 'c-p1');
+    const two = p.tabs.find((t) => t.id === 'c-p2');
+    chk('恢复：配过的那个带回自己的配置（不再弹表单）',
+      !!one && one.llm && one.llm.model === 'model-a' && one.cfg === null, JSON.stringify(one && one.llm));
+    chk('恢复：没配过的那个停在配置界面', !!two && two.cfg !== null, String(!!two && !!two.cfg));
+    chk('恢复：它表单里预填的是**前面那个对话**那份（重启后看到的还是原来那样）',
+      !!two && val(two.cfg, 'model') === 'model-a' && val(two.cfg, 'apiKey') === 'sk-AAA',
+      JSON.stringify(two && two.cfg.fields.map((f) => f.value)));
+
+    // ── 关键那条：站在"没配过、表单也收起来了"的对话上点「+」──
+    p.selectTab(p.tabs.indexOf(two));
+    p.configClose();                        // 收起来看历史（/llm 才能叫回来的那个状态）
+    chk('站的地方确认是没配过的那个对话', p.tab === two && p.tab.llm === null, String(p.tab === two));
+    const made1 = p.newTab(true);
+    chk('这一下预填的是空的：眼前这个没配过，就不去抄别的对话那份',
+      !!made1 && made1.cfg !== null && blank(made1.cfg), JSON.stringify(made1 && made1.cfg.fields.map((f) => f.value)));
+    chk('别处明明有一份配好的（c-p1 就是）也照样不抄过来',
+      !!(one.llm && one.llm.model === 'model-a'), '');
+
+    // 站在**配好的**那个上点「+」：预填的就是它那份
+    p.configCancel();                       // 撤销刚才那个新建
+    p.selectTab(p.tabs.indexOf(one));
+    one.persona = 'gentle';                 // 给"配好的那个"一个非默认性格，看它会不会跟着继承
+    const made2 = p.newTab(true);
+    chk('站在配好的对话上点「+」：地址/Key/模型/协议都预填它那份',
+      !!made2 && val(made2.cfg, 'baseUrl') === A.baseUrl && val(made2.cfg, 'apiKey') === A.apiKey
+        && val(made2.cfg, 'model') === 'model-a' && val(made2.cfg, 'provider') === 'openai',
+      JSON.stringify(made2 && made2.cfg.fields.map((f) => f.value)));
+    chk('预填是拷一份：两边不是同一份表单', made2.cfg !== one.cfg, '');
+    // 性格跟形象一样，也是**每个对话一份**、也一起被继承（继承的是"按 + 时看着的那个"）
+    chk('性格也预填了它那份（不是回到默认）', val(made2.cfg, 'persona') === 'gentle', val(made2.cfg, 'persona'));
+
+    // 配置框正摊着的时候：以**框里现在的内容**为准（你看到什么就继承什么）
+    valSet(made2.cfg, 'model', 'half-typed-live');
+    const made3 = p.newTab(true);
+    chk('眼前那个正摊着配置框：按框里现在的值预填（半改过的也算）',
+      !!made3 && val(made3.cfg, 'model') === 'half-typed-live' && val(made3.cfg, 'baseUrl') === A.baseUrl,
+      JSON.stringify(made3 && made3.cfg.fields.map((f) => f.value)));
+    chk('上一份表单的内容没被新对话改动（各是各的）',
+      val(made2.cfg, 'model') === 'half-typed-live' && made3.cfg !== made2.cfg, '');
+
+    // 提示语里不许再出现"已按上一个对话预填"这类解释（用户明确不要）
+    chk('提示语文字：只讲"改动只影响这一个对话"，不解释预填从哪来',
+      !/预填/.test(zhCn['ui.agent.form.hintNew']) && !/pre-filled|previous/.test(en['ui.agent.form.hintNew'])
+        && !/コピー済み|前の会話/.test(ja['ui.agent.form.hintNew']),
+      `${zhCn['ui.agent.form.hintNew']} / ${en['ui.agent.form.hintNew']} / ${ja['ui.agent.form.hintNew']}`);
+    stop(p);
+  } finally { globalThis.fetch = realFetch; }
+}
+
+console.log('\n── 23. 标签色号跨重启保持（用户 2026-10-15 报："重开 HUD 颜色变了"）──');
+{
+  // 症状的根因：色号以前**不落盘**，恢复时按"第几个标签"重新派一遍。而恢复顺序是
+  // updatedAt（最后动过的排最后），跟当初创建的顺序不一样 → 颜色就洗牌了。
+  // 钉住三件事：① 存档里的色号原样还回来 ② 脏值/缺失/撞车时现派且不重复 ③ 落盘带上它。
+  const realFetch = globalThis.fetch;
+  const mkFetch = (recs) => async (url, opt) => {
+    const u = String(url);
+    if (u.startsWith('/api/convs')) {
+      return { json: async () => ({ convs: recs.map((r, i) => ({ id: r.id, title: '', updatedAt: i + 1, count: 0 })), max: 8 }) };
+    }
+    if (u.startsWith('/api/conv?')) {
+      const m = /[?&]s=([^&]+)/.exec(u);
+      const id = m ? decodeURIComponent(m[1]) : '';
+      const rec = recs.find((r) => r.id === id) || {};
+      return { json: async () => ({ id, title: '', msgs: [], llm: null, ci: rec.ci }) };
+    }
+    globalThis.__savedConv = JSON.parse(opt.body);      // 记下落盘报文
+    return { json: async () => ({ ok: true }) };
+  };
+  const stop = (p) => { p._dirty.clear(); if (p._saveTimer) { clearTimeout(p._saveTimer); p._saveTimer = null; } };
+  const okCi = (t) => Number.isInteger(t.ci) && t.ci >= 0 && t.ci < 8;
+  try {
+    // ① 原样还回来（5 / 1 —— 按位置重派的话会是 0 / 1）
+    globalThis.fetch = mkFetch([{ id: 'c-x1', ci: 5 }, { id: 'c-x2', ci: 1 }]);
+    const p = new AgentPanel({});
+    await p.restore();
+    chk('恢复出两个标签', p.tabs.length === 2, String(p.tabs.length));
+    chk('色号原样还回来（不按位置重派 —— 那正是颜色洗牌的原因）',
+      p.tabs.map((t) => t.ci).join(',') === '5,1', p.tabs.map((t) => t.ci).join(','));
+    chk('标签认的就是那个颜色（color() = 色板里那一格）',
+      p.tabs[0].color() === TAB_COLORS[5] && p.tabs[1].color() === TAB_COLORS[1], '');
+    chk('恢复之后新开的不撞上恢复回来的色号',
+      (() => { const t3 = p.newTab(); return okCi(t3) && ![5, 1].includes(t3.ci); })(),
+      p.tabs.map((t) => t.ci).join(','));
+    stop(p);
+
+    // ② 脏值 / 缺失 / 小数 → 一律不认，现派一个
+    globalThis.fetch = mkFetch([{ id: 'c-y1', ci: 99 }, { id: 'c-y2', ci: -1 },
+      { id: 'c-y3' }, { id: 'c-y4', ci: 2.5 }, { id: 'c-y5', ci: '3' }]);
+    const q = new AgentPanel({});
+    await q.restore();
+    chk('越界 / 负数 / 缺失 / 小数 / 字符串 的色号都不认，改成现派',
+      q.tabs.length === 5 && q.tabs.every(okCi), q.tabs.map((t) => t.ci).join(','));
+    chk('现派出来的彼此不重复（5 个标签 5 个颜色）',
+      new Set(q.tabs.map((t) => t.ci)).size === 5, q.tabs.map((t) => t.ci).join(','));
+    stop(q);
+
+    // ③ 两个存档撞同一个色号（老存档被手工改过 / 上限从 8 改小过）→ 后面的另派
+    globalThis.fetch = mkFetch([{ id: 'c-z1', ci: 3 }, { id: 'c-z2', ci: 3 }, { id: 'c-z3', ci: 6 }]);
+    const r = new AgentPanel({});
+    await r.restore();
+    chk('撞车时先到的保住，后面的换个颜色', r.tabs[0].ci === 3 && r.tabs[1].ci !== 3, r.tabs.map((t) => t.ci).join(','));
+    chk('没撞的那个原样不动', r.tabs[2].ci === 6, r.tabs.map((t) => t.ci).join(','));
+    chk('三个标签三个颜色', new Set(r.tabs.map((t) => t.ci)).size === 3, r.tabs.map((t) => t.ci).join(','));
+    stop(r);
+
+    // ④ 落盘要带上色号（不带的话下次开又得重派 = 又洗牌）
+    globalThis.fetch = mkFetch([{ id: 'c-w1', ci: 6 }]);
+    const w = new AgentPanel({});
+    await w.restore();
+    globalThis.__savedConv = null;
+    w._dirty.add(w.tabs[0]);
+    w.flushSaves();
+    chk('落盘报文里带着色号', !!globalThis.__savedConv && globalThis.__savedConv.ci === 6,
+      JSON.stringify(globalThis.__savedConv));
+    // 新开的对话也得带上（不然它一落盘色号就丢了）
+    globalThis.__savedConv = null;
+    const fresh = w.newTab();
+    w._dirty.add(fresh);
+    w.flushSaves();
+    chk('新开的对话落盘也带色号（且是它自己那个）',
+      !!globalThis.__savedConv && globalThis.__savedConv.ci === fresh.ci,
+      JSON.stringify(globalThis.__savedConv) + ' vs ' + fresh.ci);
+    stop(w);
+
+    // ⑤ 源码守卫：恢复那段必须真的去读存档里的 ci（而不是继续按位置派）
+    const src = readFileSync(new URL('../app/src/panels/agent.js', import.meta.url), 'utf8');
+    chk('restore 里读了存档的 ci', /const want = normCi\(c\.ci\)/.test(src), '');
+    chk('ci 脏值走 normCi（不收敛成某个"看着合理"的值）', /function normCi\(v\)/.test(src) && /TAB_COLORS\.length/.test(src), '');
+    chk('落盘带了 ci', /ci: conv\.ci/.test(src), '');
+  } finally { globalThis.fetch = realFetch; }
 }
 
 console.log(`\n${fail === 0 ? '全部通过' : fail + ' 项失败'}`);

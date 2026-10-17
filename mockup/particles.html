@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<!-- Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>PONKO-HUD · 立绘粒子化对照</title>
+<style>
+  *{box-sizing:border-box}
+  :root{
+    --bg:#050c14; --panel:#0b1a26; --line:#14344a; --line-soft:#0f2436;
+    --accent:#35d0e0; --text:#b9d6e6; --dim:#5f8299;
+    --font:"Cascadia Mono","JetBrains Mono",Consolas,"Microsoft YaHei",monospace;
+  }
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font);
+       font-size:13px;padding:14px;-webkit-font-smoothing:antialiased}
+  h1{font-size:15px;margin:0 0 5px;letter-spacing:2px;font-weight:600}
+  h1 b{background:var(--accent);color:#04141a;padding:0 6px;margin-right:8px}
+  .sub{color:var(--dim);font-size:12px;margin-bottom:12px;line-height:1.6}
+  .sub code{color:var(--text)}
+  .cards{display:flex;flex-wrap:wrap;gap:12px}
+  .card{border:1px solid var(--line);background:rgba(11,26,38,.55);padding:10px;
+        display:flex;gap:11px;align-items:flex-start}
+  .lab{width:158px;flex:none}
+  .lab .n{color:var(--accent);font-size:12.5px;letter-spacing:1px;margin-bottom:5px}
+  .lab .d{color:var(--dim);font-size:11px;line-height:1.55;margin-bottom:6px}
+  .lab .k{color:var(--line);font-size:10px}
+  .lab .pick{background:var(--accent);color:#04141a;font-size:10px;letter-spacing:1px;
+             padding:0 5px;margin-left:4px;vertical-align:1px}
+  .shot{display:flex;gap:8px;align-items:flex-start}
+  .col{display:flex;flex-direction:column;gap:4px}
+  .cap{font-size:10.5px;color:var(--dim);letter-spacing:1px;padding-left:2px}
+  canvas{display:block}
+  .chrome{border:1px solid var(--line);background:var(--panel)}
+  .bar{font-size:10.5px;color:var(--accent);border-bottom:1px dashed var(--line);
+       padding:2px 6px;display:flex;justify-content:space-between;gap:20px}
+  .bar span{color:var(--dim)}
+  .foot{margin-top:14px;color:var(--dim);font-size:11px;line-height:1.7;
+        border-top:1px dashed var(--line);padding-top:9px}
+  .foot b{color:var(--text);font-weight:400}
+</style>
+</head>
+<body>
+<h1><b>▚</b>立绘粒子化对照</h1>
+<div class="sub" id="sub"></div>
+<div class="cards" id="cards"></div>
+<div class="foot" id="foot"></div>
+<script>
+const P = new URLSearchParams(location.search);
+const W = 252, H = 342;                       // 立绘区像素（28 格 x 19 行，与角色面板一致）
+const PANEL = [11, 26, 38];                   // theme.panel
+const ACCENT = hex2rgb(P.get('accent') || '#35d0e0');
+const TAG = P.get('tag') || 'idle';
+const PITCH = Math.max(2, parseInt(P.get('pitch') || '3', 10));
+const SAT = 0.9;                              // 与 char.js 的 ART_SAT 一致
+
+const CROP = { x: 46, y: 18, w: 160, h: 160 }; // 脸部放大窗
+const ZOOM = 2;
+
+function hex2rgb(h) {
+  h = String(h).trim().replace('#', '');
+  return [parseInt(h.substr(0, 2), 16) || 0, parseInt(h.substr(2, 2), 16) || 0, parseInt(h.substr(4, 2), 16) || 0];
+}
+const rgb = (c) => `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})`;
+const mix = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+function desat(c, k) { const l = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]; return mix([l, l, l], c, k); }
+
+function loadImage(src) {
+  return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = src; });
+}
+
+/** 与 grid.js 的 _drawImages 同款 contain 适配：算出来的是"图片实际落在盒子里的位置" */
+function fitContain(iw, ih, w, h) {
+  const s = Math.min(w / iw, h / ih);
+  const dw = iw * s, dh = ih * s;
+  return { dx: (w - dw) / 2, dy: (h - dh) / 2, dw, dh, s };
+}
+
+/** 把原图光栅化到立绘区尺寸，取出 RGBA */
+function raster(img) {
+  const off = document.createElement('canvas');
+  off.width = W; off.height = H;
+  const c = off.getContext('2d', { willReadFrequently: true });
+  c.imageSmoothingQuality = 'high';
+  const f = fitContain(img.width, img.height, W, H);
+  c.drawImage(img, f.dx, f.dy, f.dw, f.dh);
+  return { data: c.getImageData(0, 0, W, H).data, fit: f };
+}
+
+/**
+ * 按 pitch x pitch 分块采样：每块得到 {x,y,颜色,明度,覆盖率}
+ *
+ * ⚠️ 两个量别混用（第一版就栽在这）：
+ *   cov = 平均不透明度 —— 只反映**轮廓边缘**。色块内部恒为 1，
+ *         拿它当亮度会得到一坨纯色剪影（单色版第一版就是个大色团）。
+ *   lum = 颜色的感知明度 —— 单色/终端风要靠它出层次。
+ * 同时返回 lum 的 3%/97% 分位，供单色模式做对比度拉伸（原画明度范围很窄）。
+ */
+function blocks(data, pitch) {
+  const pts = [];
+  for (let by = 0; by < H; by += pitch) {
+    for (let bx = 0; bx < W; bx += pitch) {
+      let r = 0, g = 0, b = 0, a = 0, n = 0;
+      const y1 = Math.min(by + pitch, H), x1 = Math.min(bx + pitch, W);
+      for (let y = by; y < y1; y++) {
+        for (let x = bx; x < x1; x++) {
+          const i = (y * W + x) * 4;
+          const al = data[i + 3] / 255;
+          if (al <= 0) continue;
+          r += data[i] * al; g += data[i + 1] * al; b += data[i + 2] * al;
+          a += al; n++;
+        }
+      }
+      if (!n) continue;
+      const area = (x1 - bx) * (y1 - by);
+      const cov = a / area;                       // 平均不透明度 = 覆盖率
+      if (cov < 0.04) continue;                   // 太淡的块直接丢，避免拖一层灰雾
+      const c = desat([r / a, g / a, b / a], SAT);
+      pts.push({
+        x: bx, y: by, c, cov: Math.min(1, cov),
+        lum: (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]) / 255,
+        ph: (bx * 12.9898 + by * 78.233) % 6.283, // 每颗粒子的相位（稳定伪随机）
+      });
+    }
+  }
+  const sorted = pts.map((p) => p.lum).sort((a, b) => a - b);
+  const at = (q) => sorted.length ? sorted[Math.min(sorted.length - 1, Math.max(0, Math.round(q * (sorted.length - 1))))] : 0;
+  return { pts, lo: at(0.03), hi: at(0.97) };
+}
+
+// ── 各种画法 ─────────────────────────────────────────────
+// 三种"磷光"色：主题青、琥珀、绿 —— 后两种是终端显示器的经典色。
+const PHOS = {
+  cyan: ACCENT,                 // 跟 ?accent= 走
+  amber: [255, 176, 64],
+  green: [96, 255, 140],
+};
+
+function paintDots(ctx, bl, o) {
+  const pitch = o.pitch || PITCH;
+  const range = Math.max(0.05, o.hi - o.lo);
+  const hiC = o.hue || PHOS.cyan;
+  for (const p of bl.pts) {
+    let cov = p.cov, jx = 0, jy = 0;
+    if (o.dust) {
+      // 抖幅要克制：pitch 的 1/5 上下。第一版给了 0.42 倍**外加**逐粒亮度呼吸，
+      // 2x 放大后就是一片噪点 —— 粒子要"浮"，不是"炸"。
+      // 抖动量按相位错开即可，别再动点的大小，否则轮廓会散。
+      jx = Math.sin(o.t * 1.5 + p.ph) * (pitch * 0.18);
+      jy = Math.cos(o.t * 1.1 + p.ph * 1.7) * (pitch * 0.18);
+    }
+    if (cov < 0.06) continue;
+
+    let col;
+    if (o.mode === 'mono') {
+      // 亮度取自颜色明度并拉伸；levels 让色阶跳变，出 LED / 终端调色板的台阶感
+      let tone = Math.min(1, Math.max(0, (p.lum - o.lo) / range));
+      if (o.levels) tone = Math.round(tone * (o.levels - 1)) / (o.levels - 1);
+      tone = Math.pow(tone, o.gamma || 0.85);
+      col = mix(PANEL, hiC, tone);
+    } else {
+      col = o.bright ? mix(PANEL, p.c, 0.45 + 0.55 * p.cov) : p.c;
+    }
+    ctx.fillStyle = rgb(col);
+    if (o.shape === 'circle') {
+      const rad = (pitch / 2) * (0.30 + 0.70 * cov);
+      ctx.beginPath();
+      ctx.arc(p.x + pitch / 2 + jx, p.y + pitch / 2 + jy, rad, 0, 6.2832);
+      ctx.fill();
+    } else {
+      const s = pitch * (0.30 + 0.70 * cov);
+      const d = (pitch - s) / 2;
+      ctx.fillRect(p.x + d + jx, p.y + d + jy, s, s);
+    }
+  }
+}
+
+/** 全部点阵变体共用的入口（扫描线是可选项） */
+const dotPaint = (ctx, s, o) => { paintDots(ctx, s.bl, o); if (o.scan) paintScan(ctx); };
+
+function paintScan(ctx) {
+  ctx.fillStyle = 'rgba(0,0,0,.34)';
+  for (let y = 0; y < H; y += 3) ctx.fillRect(0, y, W, 1);
+  ctx.fillStyle = 'rgba(53,208,224,.05)';
+  for (let y = 1; y < H; y += 3) ctx.fillRect(0, y, W, 1);
+}
+
+// ── 变体表 ───────────────────────────────────────────────
+const VARIANTS = [
+  { id: 'ref', n: '原图（当前实现）', d: 'drawImage 直接贴 —— 现状基准，不经过任何采样。',
+    paint: (ctx, s) => { if (s.art) ctx.drawImage(s.art, s.fit.dx, s.fit.dy, s.fit.dw, s.fit.dh); },
+    note: '基准' },
+  { id: 'dot2', n: '点阵 · 原色 · 细', d: '方点，边长随覆盖率；保留原画配色。点距最小，细节最多。',
+    paint: dotPaint, cfg: { pitch: 2 }, note: 'pitch 2', pick: true },
+  { id: 'dot4', n: '点阵 · 原色 · 粗', d: '同左，点距翻倍 —— 颗粒更明显，远看轮廓更硬。',
+    paint: dotPaint, cfg: { pitch: 4 }, note: 'pitch 4' },
+  { id: 'mono', n: '单色 · 主题青（连续）', d: '明度映射到主题色（拉伸到 3%~97% 分位）。终端味最重的一种。',
+    paint: dotPaint, cfg: { mode: 'mono' }, note: '单色' },
+  { id: 'monoLv', n: '单色 · 主题青 · 5 级', d: '同上，但色阶压成 5 档跳变 —— 像老式 LED / 终端调色板。',
+    paint: dotPaint, cfg: { mode: 'mono', levels: 5 }, note: '5 级' },
+  { id: 'amber', n: '琥珀磷光 · 5 级', d: '经典琥珀单色显示器配色，暖、旧、像老工作站。',
+    paint: dotPaint, cfg: { mode: 'mono', levels: 5, hue: PHOS.amber }, note: '琥珀' },
+  { id: 'green', n: '绿色磷光 · 5 级 + 扫描线', d: '绿磷光 + CRT 扫描线 —— 最"终端"的一种，和主题青最不像。',
+    paint: dotPaint, cfg: { mode: 'mono', levels: 5, hue: PHOS.green, scan: true }, note: '绿磷光' },
+  { id: 'dust', n: '粒子云 · 原色（动态）', d: '每颗粒子随时间微漂 + 亮度呼吸，像悬浮的数字尘埃。',
+    paint: dotPaint, cfg: { dust: true }, anim: true, note: '动态' },
+];
+
+(async function () {
+  // 素材地址：正常走项目相对路径；被"内联版"生成器包过时走 data URI
+  // （内置预览只托管 HTML 所在目录，相对路径会 404 → 画布全空）
+  const img = await loadImage((window.__ART && window.__ART[TAG]) || `../characters/ponko/src/${TAG}.png`);
+  const { data, fit } = raster(img);
+  const blCache = new Map();
+  const getBl = (p) => { if (!blCache.has(p)) blCache.set(p, blocks(data, p)); return blCache.get(p); };
+  const base = getBl(PITCH);
+
+  document.getElementById('sub').innerHTML =
+    `素材 <code>characters/ponko/src/${TAG}.png</code> · 原图 ${img.width}x${img.height} · ` +
+    `立绘区 <code>${W}x${H}</code>（contain 后 ${fit.dw.toFixed(0)}x${fit.dh.toFixed(0)}）· ` +
+    `点距 <code>${PITCH}px</code> · 采样块 <code>${base.pts.length}</code> 个 · 明度区间 <code>${base.lo.toFixed(2)}~${base.hi.toFixed(2)}</code> · 单色基准 <code>${P.get('accent') || '#35d0e0'}</code>`;
+
+  const cards = document.getElementById('cards');
+  const anims = [];
+
+  for (const v of VARIANTS) {
+    const cfg = v.cfg || {};
+    const pitch = cfg.pitch || PITCH;
+    const scene = { art: img, fit, bl: getBl(pitch) };
+
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML =
+      `<div class="lab"><div class="n">${v.n}${v.pick ? ' <span class="pick">已选定</span>' : ''}</div>` +
+      `<div class="d">${v.d}</div><div class="k">${v.note}</div></div>`;
+
+    const shot = document.createElement('div');
+    shot.className = 'shot';
+
+    // 1x —— 套上面板外框，按真实尺寸看
+    const colA = document.createElement('div');
+    colA.className = 'col';
+    const chrome = document.createElement('div');
+    chrome.className = 'chrome';
+    chrome.innerHTML = `<div class="bar">PONKO<span>高清立绘</span></div>`;
+    const cA = document.createElement('canvas');
+    cA.width = W; cA.height = H; cA.style.width = W + 'px'; cA.style.height = H + 'px';
+    chrome.appendChild(cA);
+    colA.appendChild(chrome);
+    colA.insertAdjacentHTML('beforeend', '<div class="cap">实际尺寸 1x</div>');
+
+    // 2x —— 脸部放大
+    const colB = document.createElement('div');
+    colB.className = 'col';
+    const cB = document.createElement('canvas');
+    cB.width = CROP.w * ZOOM; cB.height = CROP.h * ZOOM;
+    cB.style.width = CROP.w * ZOOM + 'px'; cB.style.height = CROP.h * ZOOM + 'px';
+    colB.appendChild(cB);
+    colB.insertAdjacentHTML('beforeend', '<div class="cap">脸部放大 2x</div>');
+
+    shot.appendChild(colA); shot.appendChild(colB);
+    card.appendChild(shot);
+    cards.appendChild(card);
+
+    const paint = (t) => {
+      [[cA, null], [cB, CROP]].forEach(([cv, crop]) => {
+        const ctx = cv.getContext('2d');
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.fillStyle = rgb(PANEL); ctx.fillRect(0, 0, cv.width, cv.height);
+        ctx.save();
+        if (crop) {
+          ctx.beginPath(); ctx.rect(0, 0, cv.width, cv.height); ctx.clip();
+          ctx.setTransform(ZOOM, 0, 0, ZOOM, -crop.x * ZOOM, -crop.y * ZOOM);
+        }
+        v.paint(ctx, scene, { ...cfg, t: t || 0, pitch, lo: scene.bl.lo, hi: scene.bl.hi });
+        ctx.restore();
+      });
+    };
+
+    paint(0);
+    if (v.anim) anims.push(paint);
+  }
+
+  // 给无头截图脚本的就绪标志（Node 侧轮询它，别用固定 sleep）
+  window.__info = {
+    tag: TAG, pitch: PITCH, blocks: base.pts.length, lum: [base.lo, base.hi],
+    variants: VARIANTS.length, canvases: document.querySelectorAll('canvas').length,
+    art: `${img.width}x${img.height}`,
+  };
+  window.__ready = true;
+
+  document.getElementById('foot').innerHTML =
+    `<b>已选定「点阵 · 原色 · 细」（pitch 2）</b>，落地在 <code>app/src/dots.js</code> + <code>app/src/grid.js</code> 的图片层；` +
+    `启动加 <code>?art=photo</code> 可换回直接贴原图对照。` +
+    `这一页是<b>独立对照稿</b>，不参与应用渲染 —— 数据与真实面板同源（同一张 PNG、同一套 contain 适配、同样降饱和到 ${SAT}）。` +
+    `URL 参数可调：<code>?tag=idle|thinking|streaming|sleepy|error</code> · <code>&pitch=3</code> · <code>&accent=%23ff6b6b</code>。` +
+    `粒子版真正的开销在<b>每帧重画</b>：静态点阵可以预渲染成离屏画布后整块贴（几乎零成本），动态粒子云得按帧画，届时要把颜色量化后按色批处理。`;
+
+  if (anims.length) {
+    const t0 = performance.now();
+    (function loop(now) {
+      const t = (now - t0) / 1000;
+      for (const a of anims) a(t);
+      requestAnimationFrame(loop);
+    })(t0);
+  }
+})();
+</script>
+</body>
+</html>

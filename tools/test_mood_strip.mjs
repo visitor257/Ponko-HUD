@@ -5,6 +5,7 @@
 // 逐字符喂给流式解析器，断言正文里一个控制符都不留。
 //   用法：node tools/test_mood_strip.mjs
 import { createRequire } from 'node:module';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -58,6 +59,13 @@ const CASES = [
   ['情绪词·开心', '[[mood:开心|face:streaming]]正文', 'stream'],
   ['情绪词·得意', '[[mood:得意]]正文', 'stream'],
   ['情绪词·被晾', '[[mood:被晾]]正文', 'sleepy'],
+  // 生气（angry）与委屈（error）是一对方向相反的坏心情，2026-10-17 拆开后必须各归各位：
+  // 混着的话那张生气立绘永远轮不到（模型写"生气"却走到 error 上）。
+  ['情绪词·生气', '[[mood:生气]]正文', 'angry'],
+  ['情绪词·不爽', '[[mood:不爽|note:这我不认]]正文', 'angry'],
+  ['情绪词·火大', '[[心情：火大]]正文', 'angry'],
+  ['情绪词·英文 angry', '[[mood:angry|face:angry]]正文', 'angry'],
+  ['情绪词·自创"气炸了"（猜）', '[[mood:气炸了]]正文', 'angry'],
 ];
 
 for (const [name, body, wantState] of CASES) {
@@ -128,10 +136,174 @@ for (const [name, body, wantState] of CASES) {
 
   // 人格 + 情绪反应：不能只有"工作模式"，要教它对用户的态度有反应
   record('提示词给了角色人格（有脾气/有情绪）', sys.includes('有脾气') && sys.includes('不是只会干活的机器'), '');
+
+  // 2026-10-17 用户报："llm 回复时有出现类似'你我之间隔着的是一整层终端'这样的语句"。
+  // 根因是身份句把角色绑在了媒介上（"一个住在终端里的角色"），模型于是拿媒介抒情；
+  // 另一处"你和我之间的控制信道"同向助推。这两处都不许回来，且必须有一条明确的禁则。
+  record('身份句不再把角色绑在"终端"上（否则模型会拿媒介抒情）',
+    !sys.includes('住在终端'), '');
+  record('不再有"你和我之间的控制信道"这种营造空间感的说法',
+    !sys.includes('你和我之间') && !sys.includes('控制信道'), '');
+  record('提示词明确禁止自我指涉的元叙述（谈自己是什么/隔着什么）',
+    sys.includes('别拿"你是什么"当话题') && sys.includes('感慨你和他之间隔着什么'), '');
   record('提示词把 STATE 解释成感受而非工作模式', sys.includes('感受') && sys.includes('工作模式'), '');
   record('提示词明确"别什么都回一句平静"', sys.includes('别什么都回一句平静'), '');
   record('被骂 → error 的触发规则在', sys.includes('骂你') && /骂你[^\n]*error/.test(sys), '');
   record('被夸 → stream 的触发规则在', sys.includes('夸你') && /夸你[^\n]*stream/.test(sys), '');
+
+  // 2026-10-18 用户："我看到有输出「（愣了下，别过脸）」，不要这种动作描绘，这样像写剧本一样"。
+  // 禁则必须有，而且**不许带例句** —— 把用户贴的那句写进提示词，模型会原样抄回来
+  // （"你和我之间隔着终端"就是这么被喂出来的）。
+  record('提示词禁止括号/星号式的动作神态描写', sys.includes('不要写动作或神态'), '');
+  record('禁则里没有抄用户那句当范例（否则模型会照着演）',
+    !sys.includes('别过脸') && !sys.includes('愣了下'), '');
+  record('note 也点明是"说的话"不是动作', /note[^\n]*心里话[\s\S]{0,60}不要写成动作/.test(sys), '');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 情绪拟人化（2026-10-15 用户："要让 llm 的情绪更拟人……简单来说就是要像具有情感那样"）
+//
+// 三层都要**真的落进提示词**——写了实现不等于模型看得见，这几条就是钉这个的。
+// 另外两条属于架构级：情绪记忆（把"此刻心情"喂回去）与性格（配置框里选）。
+
+console.log('\n── ⑨ 提示词：三层拟人 ──');
+{
+  const sys = moodp.buildSystemPrompt(['idle', 'thinking', 'smile']);
+
+  // ① 心情面板更活：note 必须是"心里话"，不是状态说明
+  record('note 要求写心里话（给了好/差对照）',
+    sys.includes('心里话') && sys.includes('这报错看着眼熟') && sys.includes('正在分析问题'), '');
+  record('要求心情具体到这件事上', sys.includes('要具体到这件事上'), '');
+  record('允许一轮里情绪有起伏、也可以不变（真实的人不会每句话都在切）',
+    sys.includes('也可以一直没变') && sys.includes('先犯难、后得意'), '');
+  record('禁止每轮搬同一句话糊弄', sys.includes('别每轮都搬同一句话'), '');
+
+  // ② 说话也带情绪
+  record('要求说话像人、不要客服腔', sys.includes('客服腔') && sys.includes('作为一个 AI 助手'), '');
+  record('说明心情会改变说话方式', sys.includes('心情会改变你说话的方式'), '');
+
+  // ③ 情绪影响干活（但要守住底线）
+  record('允许因情绪先抱怨两句、然后照常把活干完',
+    sys.includes('先把不高兴说出来') && sys.includes('该办的活照样办完'), '');
+  record('有底线：不许故意给错答案、不许假装做完',
+    sys.includes('不许故意给错的答案') && sys.includes('不许假装做完了'), '');
+}
+
+console.log('\n── ⑩ 情绪记忆：把"此刻的心情"喂回给模型 ──');
+// 之前 mood 标记是"往界面的单行道"（agent.js 发历史前会 stripMood），模型每轮从白纸开始，
+// 只能按"夸→stream / 骂→error"那张表现推 —— 表现就是每轮重置、机械。
+{
+  const before = moodp.buildSystemPrompt(['idle']);
+  record('没给心情 → 不凭空编一段"你此刻的心情"', !before.includes('【你此刻的心情】'), '');
+
+  const after = moodp.buildSystemPrompt(['idle'], { mood: { state: 'error', note: '算了', minutes: 3.4 } });
+  record('给了心情 → 注入"你此刻的心情"', after.includes('【你此刻的心情】'), '');
+  record('注入了这个 state 的中文名', after.includes('出错'), '');
+  record('注入了当时的心里话（原话）', after.includes('算了'), '');
+  record('注入了"保持了多久"', after.includes('3 分钟'), '');
+  record('明确要求它有情绪惯性、不要每轮重置', after.includes('情绪是有惯性的'), '');
+
+  record('脏 state 不注入（不猜）',
+    !moodp.buildSystemPrompt(['idle'], { mood: { state: 'zzz' } }).includes('【你此刻的心情】'), '');
+  record('moodBriefing 对空值返回空串（不硬编一句假的顶上）',
+    moodp.moodBriefing(null) === '' && moodp.moodBriefing({}) === '', '');
+  record('心情笔记超长会被截断（不让它把 system 撑爆）',
+    moodp.moodBriefing({ state: 'idle', note: 'x'.repeat(200) }).length
+      < moodp.moodBriefing({ state: 'idle' }).length + 120, '');
+}
+
+console.log('\n── ⑪ 性格：配置框里选，每个对话一份 ──');
+{
+  record('persona=default 时**不加**人设段（留白，别把模型逼去演标签）',
+    !moodp.buildSystemPrompt(['idle']).includes('**你的性格**'), '');
+  for (const id of moodp.PERSONA_KEYS) {
+    const s = moodp.buildSystemPrompt(['idle'], { persona: id });
+    record(`persona=${id} ${id === 'default' ? '不加人设段' : '加上了人设段'}`,
+      s.includes('**你的性格**') === (id !== 'default'), '');
+  }
+  record('除 default 外每个性格都有实打实的文案（不是空条）',
+    moodp.PERSONA_KEYS.every((k) => k === 'default' || (moodp.PERSONAS[k].line || '').trim().length > 20), '');
+
+  // 归一化：这一项**没有"猜"的余地**，非法一律回落 default（不是随便挑一个像的）
+  const dirty = [null, undefined, '', 'nope', 123, {}, [], '傲娇', 'defaultx'];
+  record('非法性格 id 一律回落 default', dirty.every((v) => moodp.normPersona(v) === 'default'),
+    JSON.stringify(dirty.map((v) => [v, moodp.normPersona(v)])));
+  record('大小写 / 前后空白都能收敛',
+    moodp.normPersona('  TSUNDERE ') === 'tsundere' && moodp.normPersona('Genki') === 'genki', '');
+  record('default 本身也认（不是被当成非法值）', moodp.normPersona('default') === 'default', '');
+}
+
+console.log('\n── ⑫ 前端的候选表不许和后端漂移 ──');
+// 前端跑在浏览器里、后端是 CommonJS，共用不了一份常量表 —— 那就用这条守卫钉住：
+// 单边加人（多一个/少一个/顺序变了）在这里就红。
+{
+  const src = fs.readFileSync(path.join(ROOT, 'app/src/panels/agent.js'), 'utf8');
+  const block = src.match(/const PERSONA_OPTS = \[([\s\S]*?)\];/);
+  const ids = block ? [...block[1].matchAll(/\['([a-z]+)'\s*,/g)].map((m) => m[1]) : [];
+  record('前端 PERSONA_OPTS 读得到', ids.length > 0, JSON.stringify(ids));
+  record('与后端 PERSONA_KEYS 完全一致（含顺序）',
+    ids.join(',') === moodp.PERSONA_KEYS.join(','),
+    `前端 [${ids.join(',')}] / 后端 [${moodp.PERSONA_KEYS.join(',')}]`);
+
+  // 每个 id 都得有语言包文案，否则配置框会直接亮出原始 key（那种失败方式最难看）
+  const keyOf = (k) => `'ui.agent.opt.persona${k[0].toUpperCase()}${k.slice(1)}'`;
+  for (const f of ['zh-cn', 'en', 'ja', 'ru', 'tlh']) {
+    const dict = fs.readFileSync(path.join(ROOT, `app/src/i18n/${f}.js`), 'utf8');
+    const missing = moodp.PERSONA_KEYS.filter((k) => !dict.includes(keyOf(k)));
+    record(`${f}.js 里 ${moodp.PERSONA_KEYS.length} 个性格名都在`, missing.length === 0, missing.join(','));
+    record(`${f}.js 有「性格」那一栏的标签`, dict.includes("'ui.agent.field.persona'"), '');
+  }
+
+  // 接线守卫：请求真的把它带出去了吗（没带 = 选了半天白选）
+  const api = fs.readFileSync(path.join(ROOT, 'app/src/api.js'), 'utf8');
+  record('askAgent 把 persona / mood 带进请求体',
+    /\bpersona\b/.test(api.split('/api/agent')[1] || '') && /\bmood\b/.test(api.split('/api/agent')[1] || ''), '');
+  const srv = fs.readFileSync(path.join(ROOT, 'server/server.js'), 'utf8');
+  record('后端 /api/agent 走 agentMoodOpts() 校验这两个参数',
+    /streamAgent\(res, body\.text \|\| '', body\.history \|\| \[\], body\.llm, agentMoodOpts\(body\)\)/.test(srv), '');
+  record('后端把 opts 一路传进 buildSystemPrompt',
+    /buildSystemPrompt\(facesFromPacks\(\), opts\)/.test(srv), '');
+}
+
+console.log('\n── ⑬ 加/删一个 state 时最容易漏的几处（2026-10-17 加 angry 立的）──');
+// 前端有三份**必须**互相同步的表，而且漏了都不会报错、只会静默走兜底：
+//   mood.js  MOOD_STATES  → 心情条目标高度（漏了 → fromAgent 直接拒绝这个 state，心情永远切不过去）
+//   theme.js MOODS        → 配色（漏了 → themeFor 兜底回 idle 配色，界面变青色但不报错）
+//   charpack.js ALIAS     → state → 素材标签（漏了 → 切过去时脸变成待机）
+{
+  const moodMod = await import(new URL('../app/src/mood.js', import.meta.url).href);
+  const themeMod = await import(new URL('../app/src/theme.js', import.meta.url).href);
+  const be = moodp.STATE_KEYS;
+
+  record('前端 mood.js 的 state 表与后端枚举完全一致',
+    Object.keys(moodMod.MOOD_STATES).sort().join(',') === be.slice().sort().join(','),
+    `前端 [${Object.keys(moodMod.MOOD_STATES)}] / 后端 [${be}]`);
+
+  const missTheme = be.filter((k) => !themeMod.MOODS[k]);
+  record(`前端 theme.js 配色表覆盖全部 ${be.length} 个 state（漏了会静默回落 idle 配色）`,
+    missTheme.length === 0, missTheme.join(','));
+
+  const aliasSrc = fs.readFileSync(path.join(ROOT, 'app/src/charpack.js'), 'utf8');
+  const aliasBlock = aliasSrc.match(/const ALIAS = \{([\s\S]*?)\n\};/);
+  const aliasKeys = aliasBlock ? [...aliasBlock[1].matchAll(/^\s*([a-z]+)\s*:/gm)].map((m) => m[1]) : [];
+  const missAlias = be.filter((k) => !aliasKeys.includes(k));
+  record(`charpack ALIAS 里每个 state 都有别名（漏了 → 切过去脸变待机）`,
+    missAlias.length === 0, missAlias.join(','));
+
+  // 表情标签是从枚举取的（以前是写死的数组，加 state 时会静默少一个点不到的标签）
+  const charSrc = fs.readFileSync(path.join(ROOT, 'app/src/panels/char.js'), 'utf8');
+  record('表情标签不再写死数组（从 MOOD_KEYS 取）',
+    /const keys = MOOD_KEYS;/.test(charSrc) && !/\['idle', 'think', 'stream', 'sleepy', 'error'\]/.test(charSrc), '');
+
+  // 提示词：模型只能看见这里写的 state，加了状态却没写进来 = 模型永远不会用它
+  const sys = moodp.buildSystemPrompt(['idle', 'angry']);
+  const missDoc = be.filter((k) => !new RegExp(`- ${k}\\s`).test(sys));
+  record('提示词里逐个列出了所有 state（模型看不见就不会用）', missDoc.length === 0, missDoc.join(','));
+  record('提示词按 state 数量改了"这几个 STATE"那句', sys.includes('这六个 STATE'), '');
+  record('angry 与 error 的区别写进了提示词',
+    sys.includes('angry 和 error 别混') && sys.includes('顶回去') && sys.includes('蔫'), '');
+  record('"被骂"那条同时给了 angry 与 error 两个去向',
+    /骂你[^\n]*angry/.test(sys) && /骂你[^\n]*error/.test(sys), '');
 }
 
 const failed = results.filter((x) => !x.ok);

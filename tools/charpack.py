@@ -10,7 +10,7 @@
   pack.json      角色素材包清单：表情标签 -> 帧文件映射
 
 用法：
-  python charpack.py --src ../characters/ds-whale/src --out ../characters/ds-whale/frames
+  python charpack.py --src ../characters/<pack>/src --out ../characters/<pack>/frames
 
 关键参数：
   --cols 48        水平字符数（=水平像素数），越大越清晰，越小越"像素画"
@@ -44,8 +44,11 @@ def parse_color(s):
 
 
 def posterize(px, levels):
+    # levels <= 1 = **不量化**（--posterize 0 是默认值，文档写的就是"0=不量化"）。
+    # 2026-10-15 修：原来这里 return (0,0,0)，于是默认参数下整帧全黑 ——
+    # 生成出来的是一张剪影，还看不出来是工具的错。（用户素材 / 新包都踩过。）
     if levels <= 1:
-        return (0, 0, 0)
+        return (int(px[0]), int(px[1]), int(px[2]))
     step = 255 / (levels - 1)
     return tuple(int(round(c / step) * step) for c in px)
 
@@ -213,11 +216,16 @@ def main():
     write_preview(frames_for_preview, os.path.join(args.out, "preview.html"), bg)
 
     if args.emit_pack:
+        # label：这个标签在界面上显示成什么（**英文必填**，其余语言选填 —— 缺就落英文）。
+        # 心情的名字归素材包所有，不写在语言包里（见 README「心情的名字」一节）。
+        # 这里只能给出默认值（标签名本身），要中文/日文得自己往 pack.json 里补：
+        #   "label": { "en": "idle", "zh-cn": "待机", "ja": "待機" }
         pack = {
             "id": os.path.basename(os.path.normpath(os.path.join(args.src, ".."))),
             "name": os.path.basename(os.path.normpath(os.path.join(args.src, ".."))),
             "grid": {"cols": args.cols, "rows": frames_for_preview[0][2], "charset": args.charset},
-            "moods": {k: {"frames": v, "fps": 3 if len(v) > 1 else 0, "loop": len(v) > 1} for k, v in packs.items()},
+            "moods": {k: {"frames": v, "fps": 3 if len(v) > 1 else 0, "loop": len(v) > 1,
+                          "label": {"en": k}} for k, v in packs.items()},
         }
         with open(os.path.join(args.out, "pack.json"), "w", encoding="utf-8") as f:
             json.dump(pack, f, ensure_ascii=False, indent=2)

@@ -2,9 +2,10 @@
 // 主装配：布局 / 主循环 / 输入 / 鼠标
 import { Grid, ATTR, rgb, mix } from './grid.js';
 import { themeFor, MOOD_KEYS } from './theme.js';
-import { Mood } from './mood.js';
+import { Mood, moodLabel, moodView } from './mood.js';
 import { loadPacks } from './charpack.js';
-import { sysSnapshot, netgeo, bootLog } from './api.js';
+import { sysSnapshot, netgeo, bootLog, getUiState, saveUiState } from './api.js';
+import { mkMoodSaver } from './uistate.js';
 import { BootScreen } from './boot.js';
 import { SysPanel } from './panels/sys.js';
 import { ShellPanel } from './panels/shell.js';
@@ -30,6 +31,15 @@ const canvas = document.getElementById('screen');
 const grid = new Grid(canvas, { fontSize: 15, lineHeight: 1.2 });
 const hidden = document.getElementById('hidden-input');
 
+// 克林贡文 pIqaD 的字形在私用区（U+F8D0 起），系统字体一个都没有，字体是自带的
+// （app/assets/fonts，见 style.css 的 @font-face）。字体**异步**到，到了必须清一次
+// 字符宽度缓存 —— 不然字体没到之前量到的"豆腐块宽度"会被 chWidth 记死（见 Grid.clearWidthCache）。
+// 这里**故意不 await**：首屏不该为 16KB 字体停一下；字体一到下一帧就重排，顶多闪一两帧。
+const piqadFont = (document.fonts && document.fonts.load)
+  ? document.fonts.load('15px "pIqaD qolqoS"').catch(() => [])
+  : Promise.resolve([]);
+piqadFont.then(() => grid.clearWidthCache());
+
 // 启动画面（eDEX-UI 那种开机刷屏）：每行都是本次运行真实发生的事，见 boot.js。
 // ?boot=0 跳过（自动化验证用），?bootpace=N 改回放预算毫秒
 let bootScr = null;
@@ -37,17 +47,39 @@ let bootWaiter = null;          // 等启动画面放完才开 HUD 进场动画
 let bootFrames = 0;
 let bootDrawLogged = false;     // 重绘耗时只记一次（而且要等日志回放进来了再记）
 
-const mood = new Mood();
+// 屏幕上的心情 = **当前对话**的那份（每个对话一份，见 AgentConv 的构造函数与 mood.js 的 moodView）。
+// 全项目照旧 `mood.xxx` 地用：读写都实时落到 panels.agent.activeMood()，切标签自动换人。
+// 所以这里只是**一层视图**，不要再往它身上存东西（存不住，切个标签就换了）。
+// bootMood 只兜面板还没造好那一小段（本模块顶层 → panels 建完之前）。
+// ⚠ 这个 getter 只在真正绘制 / 写盘时才跑，那时 panels 已经建好了；别在面板的构造函数里读它。
+const bootMood = new Mood();
+const mood = moodView(() => (panels && panels.agent && panels.agent.activeMood()) || bootMood);
+// 心情快照的落盘（关掉再开，配色和立绘要跟退出前一样）。
+// 闸门在 saver 那边：**seed() 之前一笔都不写** —— 开机那一刻 mood 还是默认待机，
+// 抢着存就会把盘上那份好快照盖成待机（正好是这次要修的症状的反面）。
+// 所以下面这趟"读快照 → 恢复（或确认没有）"走完之前，主循环里的 pump() 是空转的。
+const moodSaver = mkMoodSaver((snap) => { saveUiState({ mood: snap }); });
+/** 读快照这一趟走完（拿到快照或确认没有）→ 把当前状态记成基准并开闸，之后才允许写盘 */
+function moodBooted(snap) {
+  if (moodSaver.primed) return false;
+  const ok = !!(snap && snap.mood) && mood.restore(snap.mood);
+  moodSaver.seed(mood);
+  return ok;
+}
 const panels = {
   sys: new SysPanel(),
   globe: new GlobePanel(),
   shell: new ShellPanel(mood),
-  agent: new AgentPanel(mood),
+  agent: new AgentPanel(),          // 心情挂在对话身上，面板不再接一份全局 mood（见 AgentConv）
   char: null,                       // 等素材包加载完再建
 };
 panels.agent._clearHidden = () => { hidden.value = ''; };   // 关闭配置框时清空隐藏输入框
 panels.agent.onConvClosed = afterConvClosed;                // /del chat 关掉对话后收拾界面
 panels.agent.onDelAsk = () => armConvClose();               // /del chat 命中：先弹红条，回车才真删
+// 形象：① agent 要知道现在有哪些包（配置框的候选项）② 形象一变就换立绘。
+// 这两件事只有主装配知道（packs / panels.char 都在这儿），agent.js 不认识它们。
+panels.agent.getPacks = () => packs.map((p) => ({ id: p.id, name: p.name || p.id }));
+panels.agent.onArtChange = applyConvArt;
 // 调试/端到端验证入口：__panels 给面板对象，__grid 给字符缓冲（chs 是**逐格的字符**，
 // 端到端要核对"屏幕上到底写了什么字"只能从这儿读 —— canvas 里的文字读不出来）。
 if (typeof window !== 'undefined') { window.__panels = panels; window.__grid = grid; }
@@ -198,6 +230,23 @@ let focus = 'agent';
 let prevPty = false;                 // 上一帧是否处于真终端模式（用于进入时自动把焦点给 shell）
 function activeInputPanel() { return focus === 'shell' ? panels.shell : panels.agent; }
 
+// ── 物理 Ctrl 键跟踪（左右都认）
+//
+// 为什么不能只看 e.ctrlKey：2026-10-18 用户报「Ctrl+Enter 发送，但只限左 Ctrl，右 Ctrl 没反应」。
+// 端到端实测过：同一个浏览器里 ControlLeft / ControlRight 的 keydown 字段**一模一样**
+// （只有 location 1/2 的区别，Enter 上都是 ctrlKey=true），代码路径本身没有偏袒左边。
+// 所以问题只可能出在"事件送到页面之前"—— 右 Ctrl 在不少中文输入法里被设成中英文切换，
+// 会被 IME 先一步吃掉；也可能被报成 AltGr。记一下物理键，Enter 那边就有第二道判据。
+//
+// ⚠ 必须挂**捕获**阶段：下面 #hidden-input 的 keydown 是冒泡，晚了也拿不到。
+// ⚠ 失焦要清：keyup 可能落在别的窗口里，收不到就永远"按着 Ctrl"，之后 Enter 全变成发送。
+let ctrlHeld = false;
+const isCtrlKey = (e) => e.key === 'Control' || e.code === 'ControlLeft' || e.code === 'ControlRight';
+window.addEventListener('keydown', (e) => { if (isCtrlKey(e)) ctrlHeld = true; }, true);
+window.addEventListener('keyup', (e) => { if (isCtrlKey(e)) ctrlHeld = false; }, true);
+window.addEventListener('blur', () => { ctrlHeld = false; });
+document.addEventListener('visibilitychange', () => { if (document.hidden) ctrlHeld = false; });
+
 // 配置框：把隐藏输入框内容同步到当前字段（字段态写值，按钮态清空）
 function syncCfgHidden() {
   const a = panels.agent;
@@ -254,7 +303,6 @@ function drainToPty() {
   const typed = hidden.value;
   if (typed) panels.shell.ptyType(typed);
   hidden.value = '';
-  mood.touch();
 }
 
 hidden.addEventListener('input', (e) => {
@@ -269,7 +317,6 @@ hidden.addEventListener('input', (e) => {
     if (a.form.idx >= 0 && a.form.idx < a.form.fields.length && a.cfgFieldEditable()) {
       a.form.fields[a.form.idx].value = hidden.value;
     } else hidden.value = '';          // 按钮态/循环字段：文本一律丢弃
-    mood.touch();
     return;
   }
   // 真终端模式：不在本地攒行。隐藏输入框只当 IME 合成面，敲/合成出来一个字符就立刻
@@ -277,7 +324,7 @@ hidden.addEventListener('input', (e) => {
   if (focus === 'shell' && panels.shell.inPty()) {
     // 合成中先不动：IME 还没定稿，此刻送进去的是拼音串。真正的结果是 compositionend /
     // 随后的 input 事件，那时再把整段中文倒进 PTY。
-    if (e && e.isComposing) { mood.touch(); return; }
+    if (e && e.isComposing) return;
     drainToPty();
     return;
   }
@@ -286,8 +333,14 @@ hidden.addEventListener('input', (e) => {
   p.caret = hidden.selectionStart ?? p.input.length;
   // 多行内容可能是粘贴进来的（没走 Enter 那条路），输入框高度得跟着变
   if (focus === 'agent' && !panels.agent.inConfig) syncHidden();
-  mood.touch();                          // 打字不等于情绪，只防"长时间无活动"误判
 });
+// 心情调试的**触发键**（Ctrl+M：循环切下一个心情）默认关掉。
+// 为什么连入口一起关：终端里 ^M 就是回车，很容易误触；而界面上那几处痕迹现在都藏了，
+// 误触就成了"没来由地自己变脸"，比显示出来还糟（用户 2026-10-17 问的「手动 · 生气」
+// 多半就是这么来的）。调试时改 true —— 界面那半边在 char.js 的 SHOW_MOOD_CHIPS。
+// `?mood=` 启动参数不受影响：要手改 URL 才用得上，不可能误触。
+const MOOD_DEBUG_KEY = false;
+
 hidden.addEventListener('keydown', (e) => {
   // 删对话的确认摆在最前面：这条确认一旦弹出，回车/ESC 的语义就临时改成"确认/取消"，
   // 别的分支（发送消息、中断、翻历史）都不该跟它抢。焦点不在 agent 上时自动作废。
@@ -315,7 +368,9 @@ hidden.addEventListener('keydown', (e) => {
     } else if (e.key === 'Enter') {
       e.preventDefault(); a.configEnter(); syncCfgHidden();
     } else if (e.key === 'Escape') {
-      e.preventDefault(); if (a.llmConfigured) a.configClose();
+      // 交给 configCancel 统一处理：新建对话时按 ESC = 撤销新建（删掉刚建的那个标签）；
+      // 编辑已有对话时按 ESC = 老样子（配好了就关，没配好不许关）。
+      e.preventDefault(); a.configCancel();
     }
     return;
   }
@@ -357,9 +412,14 @@ hidden.addEventListener('keydown', (e) => {
   if (e.isComposing) return;
   if (e.key === 'Enter') {
     // AGENT 聊天输入框：Enter = 换行（交给 textarea 原生插入，input 事件会同步进面板），
-    // 只有 Ctrl+Enter 才发送。shell 命令行仍然是 Enter 直接执行。
-    if (focus === 'agent' && !panels.agent.inConfig && !e.ctrlKey) {
-      mood.touch();
+    // Ctrl+Enter / Alt+Enter 才发送。shell 命令行仍然是 Enter 直接执行。
+    //
+    // 判据不能只看 e.ctrlKey：右 Ctrl 被输入法吃掉、或被系统报成 AltGr 时，Enter 上可能
+    // 根本没带 ctrlKey —— 那样"右 Ctrl+Enter"会退化成普通 Enter（= 换行），看着就是
+    // "右 Ctrl 没反应"（2026-10-18 报的）。ctrlHeld 是物理键那道兜底。
+    // Alt+Enter 留作备用发送键：Alt 基本不会被输入法占用。
+    const sendMod = e.ctrlKey || e.altKey || ctrlHeld;
+    if (focus === 'agent' && !panels.agent.inConfig && !sendMod) {
       syncHidden();                      // 输入框长高一行，隐藏框跟着贴住
       return;
     }
@@ -371,6 +431,21 @@ hidden.addEventListener('keydown', (e) => {
     syncHidden();                        // 发送后输入框缩回一行
   } else if (e.key === 'Tab') {
     e.preventDefault();
+    // 管道模式下 Tab 是**补全**（跟任何 shell 一样）：输入框里有东西就补，空行才是老行为
+    // （切焦点）—— 于是"Tab 切面板"那条肌肉记忆还在，但不会再把正在打的命令吃掉。
+    // 真终端根本走不到这儿：上面裸直通那一段已经把 \t 发给程序了，补全归程序自己。
+    if (focus === 'shell' && !panels.shell.inPty() && panels.shell.input.trim()) {
+      const sh = panels.shell;
+      const tab = sh.tab;
+      sh.tabComplete().then((changed) => {
+        // 等回包这几毫秒里可能已经切走标签 / 切了焦点 —— 那就别往隐藏输入框里写别人的字
+        if (!changed || focus !== 'shell' || sh.tab !== tab) return;
+        hidden.value = sh.input;
+        try { hidden.setSelectionRange(sh.caret, sh.caret); } catch (err) { /* 忽略 */ }
+        syncHidden();
+      });
+      return;
+    }
     focus = focus === 'shell' ? 'agent' : 'shell';
     hidden.value = activeInputPanel().input;
     syncHidden();
@@ -394,7 +469,8 @@ hidden.addEventListener('keydown', (e) => {
       try { hidden.setSelectionRange(hidden.value.length, hidden.value.length); } catch (err) { /* 忽略 */ }
     }
   }
-  if (e.ctrlKey && (e.key === 'm' || e.key === 'M')) {
+  // Ctrl+M = 循环切心情（调试入口，默认关，见文件上方 MOOD_DEBUG_KEY）
+  if (MOOD_DEBUG_KEY && e.ctrlKey && (e.key === 'm' || e.key === 'M')) {
     e.preventDefault();
     const i = MOOD_KEYS.indexOf(mood.key);
     mood.force(MOOD_KEYS[(i + 1) % MOOD_KEYS.length]);
@@ -430,7 +506,6 @@ hidden.addEventListener('compositionend', (e) => {
     if (t) panels.shell.ptyType(t);
     panels.shell.ime = null;
     hidden.value = '';
-    mood.touch();
     return;
   }
   drainToPty();
@@ -526,6 +601,26 @@ function afterConvChange() {
   convClose = null;
   hidden.value = panels.agent.input || '';
   syncHidden();
+  applyConvArt();        // 立绘跟着当前对话的形象走（每个对话一份，见 applyConvArt）
+}
+
+/**
+ * 让右侧立绘跟着**当前对话**的形象走。
+ *
+ * 形象是**每个对话一份**的（`tab.charpack`）：选了具体包就用它；选「自动」就用那个对话的模型
+ * 挑出来的那个包（`tab.charpackPicked`）；两者都没定（自动但还没挑过、或那个包被删了）
+ * → 回退默认包（第一个），保证立绘区永远有东西可画。
+ * 三个时机要叫它：切标签、配置保存完（含"自动"挑完）、启动恢复完。
+ */
+function applyConvArt() {
+  if (!panels.char) return;
+  const want = panels.agent.artId();
+  const p = (want && packs.find((x) => x.id === want)) || pack;
+  panels.char.setPack(p);
+  // faces 挂在**每个对话自己的那份心情**上（心情现在是每对话一份）：所以不能只在
+  // "包真的换了"时才灌 —— 切到另一个对话、包恰好相同的情况也要灌，否则那个对话的
+  // "✗未收录"提示会失效（faces 是空的 → faceOk() 一律放行）。
+  if (p) mood.setFaces(p.tags());
 }
 
 /**
@@ -563,6 +658,7 @@ function afterConvClosed() {
   focus = 'agent';
   hidden.value = panels.agent.input || '';
   syncHidden();
+  applyConvArt();        // 换成了另一个对话 → 立绘也要跟着换
 }
 
 window.addEventListener('keydown', (e) => {
@@ -572,7 +668,8 @@ window.addEventListener('keydown', (e) => {
   if (e.shiftKey && (k === 'T' || k === 't')) {
     e.preventDefault(); e.stopPropagation();
     if (onAgent) {
-      if (!panels.agent.newTab()) { toast('ui.toast.maxConv', null, 1600); return; }
+      // 传 true = 用户主动新建：建好就弹配置框，并用当前对话那份配置预填
+      if (!panels.agent.newTab(true)) { toast('ui.toast.maxConv', null, 1600); return; }
       afterConvChange();
       return;
     }
@@ -723,10 +820,12 @@ canvas.addEventListener('mousedown', (e) => {
     if (i !== null) {
       focus = 'agent';
       convClose = null;
-      if (i === -1) panels.agent.newTab();
+      // 点「+」→ newTab(true)：建好就弹配置框（拿当前对话那份配置预填，见 agent.js）
+      if (i === -1) panels.agent.newTab(true);
       else panels.agent.selectTab(i);
       hidden.value = panels.agent.input || '';
       syncHidden();
+      applyConvArt();                     // 鼠标点标签切对话，跟 ^Tab 走同一条收尾
       e.preventDefault();
       return;
     }
@@ -739,6 +838,8 @@ canvas.addEventListener('mousedown', (e) => {
   }
   if ((!zoom || zoom === 'globe') && panels.globe.hit(c.x, c.y)) { panels.globe.onDown(c.x, c.y); return; }
   if ((!zoom || zoom === 'char') && panels.char) {
+    // 点心情标签 = 手动覆盖，属于**调试入口**：默认那排标签不画（char.js 的 SHOW_MOOD_CHIPS），
+    // 于是 chipAt 恒返回 null，这里自然不生效。留着是为了开发时把标签打开就能点。
     const key = panels.char.chipAt(c.x, c.y);
     if (key) { mood.force(key); return; }
   }
@@ -1021,6 +1122,10 @@ function frame(now) {
   const dt = Math.min(0.1, (now - last) / 1000); last = now; t += dt;
   fps = fps * 0.9 + (1 / Math.max(1e-3, dt)) * 0.1;
   mood.tick(dt);
+  // 心情变了就排一次落盘（去抖；签名里不含 value，所以不是每帧都在写）。
+  // 这里**不管启动画面有没有在放** —— 启动期 agent 不会动心情，代价是一次字符串比较。
+  // 还没开闸（读快照那趟没回来）时它是空转的，见 moodSaver 那段注释。
+  moodSaver.pump(mood);
 
   const T = themeFor(mood.key);
 
@@ -1119,10 +1224,19 @@ async function boot() {
   if (!Number.isNaN(zd) && zd >= 0) zoomDur = zd;
   // ?mood=think          手动覆盖（调试）
   // ?local=1             shell 成败允许反向影响心情（默认关闭：那是 agent 的活）
-  // ?nofallback=1        连"长时间无 agent 活动→瞌睡"的兜底也关掉，完全听 agent
-  if (q.get('mood')) mood.force(q.get('mood'));
-  if (q.get('local') === '1') mood.localSignals = true;
-  if (q.get('nofallback') === '1') mood.autoFallback = false;
+  //
+  // （原来还有一个 ?nofallback=1，用来关掉"长时间无活动→瞌睡"。那条兜底已经整个删掉了 ——
+  //   心情只由 agent 改，见 mood.js 文件头 —— 开关自然也就没了。）
+  //
+  // ⚠ 它们落在**当前对话**的心情上（心情每个对话一份）。这会儿点的是那个起手对话，
+  //   而 restore() 随后会把标签整体换掉 —— 所以读档收尾还得再点一次（见文件后半段）。
+  const dbgMood = q.get('mood') || '';
+  const dbgLocal = q.get('local') === '1';
+  const applyMoodDebug = () => {
+    if (dbgMood) mood.force(dbgMood);
+    if (dbgLocal) mood.localSignals = true;
+  };
+  applyMoodDebug();
 
   // 启动画面：?boot=0 跳过（自动化验证用）；?bootpace=N 改回放预算（毫秒）
   const pace = parseFloat(q.get('bootpace'));
@@ -1132,6 +1246,37 @@ async function boot() {
   }
   const blog = (tag, text) => { if (bootScr) bootScr.log(tag, text); };
   const msec = (t0) => `${(performance.now() - t0).toFixed(0)}ms`;
+
+  // ⓪ 心情快照 + 落在哪个对话：重启后画面要跟关掉时**一样**（配色、立绘、停在哪个对话）。
+  //    起手就发出去、谁都不挡 —— 本地后端，几十毫秒就回来了，正好赶在启动画面放完之前。
+  //    ?mood=xxx 是明确指定，那就以它为准，不去读盘（也不让盘上那份盖掉它）。
+  //    **一趟请求两处用**：这里决定心情，⑤ 恢复对话那一段决定激活哪个标签（见 uiStateP）。
+  //    带超时：后端没起来 / 请求卡住时按"没有快照"走 —— 否则 ⑤ 那边一 await 就把
+  //    "落在哪个对话"这件事跟着一起卡住，启动画面早放完了，界面却停在一个没人选的标签上。
+  //
+  //    素材包也**起手就发**：下面那行日志要报出心情的显示名，而**名字在素材包里、不在语言包里**
+  //    （见 mood.js 的 moodLabel）。同样不挡任何东西 —— 真正用它建面板还是 ④ 那一处。
+  const packsP = loadPacks().catch(() => []);
+  const uiStateP = q.get('mood')
+    ? Promise.resolve(null)
+    : Promise.race([
+      getUiState().catch(() => null),
+      new Promise((r) => setTimeout(() => r(null), 2500)),
+    ]);
+  if (q.get('mood')) {
+    moodBooted(null);                          // seed 掉当前的（= 强制那个），之后就可以写盘了
+  } else {
+    const tMood = performance.now();
+    uiStateP.then(async (s) => {
+      if (!moodBooted(s)) return;              // 没快照 / 读失败：这一步顺手把 saver 的闸开了
+      // 本地几十毫秒，只为把心情名说对；不等它的话这行会退化成裸 state id（"此刻 error"）
+      packs = await packsP;
+      pack = pack || packs[0] || null;
+      blog('ui', i18n.t('boot.ui.moodRestored', {
+        ms: msec(tMood), mood: moodLabel(pack, mood.key),
+      }));
+    }).catch(() => { moodBooted(null); });
+  }
 
   // ① 主循环**先起**：启动画面靠它每帧推进，所以它必须在任何可能慢的 await 之前。
   //    （反例：一开始把 requestAnimationFrame 放在 netgeo 之后 —— 外网查询要好几秒，
@@ -1161,9 +1306,10 @@ async function boot() {
     cores: navigator.hardwareConcurrency || '?',
   }));
 
-  // ④ 素材包（本地小文件，很快）
-  try { packs = await loadPacks(); } catch (e) { packs = []; }
+  // ④ 素材包（本地小文件，很快）—— 起手就发过了，这里只是**等它到**（见 ⓪）
+  packs = await packsP;
   pack = packs[0] || null;
+  panels.agent.refreshArtOpts();          // 配置框那时可能已经摊开了（起手那个没配的对话）→ 补齐候选项
   if (pack) {
     mood.setFaces(pack.tags());           // 让面板能提示 agent 指定的表情是否收录
     panels.char = new CharPanel(mood, pack);
@@ -1213,16 +1359,31 @@ async function boot() {
   }).catch((e) => blog('net', i18n.t('boot.net.fail', { ms: msec(tNet) })));
 
   // 恢复上次的对话：存档在 run/conversations/（该目录不入库）。同样不挡启动画面。
-  panels.agent.restore().then(() => {
+  panels.agent.restore().then(async () => {
     const restored = panels.agent.tabs.filter((t) => t.msgs.length).length;
     const msgs = panels.agent.tabs.reduce((n, t) => n + t.msgs.length, 0);
+    // 落在**退出前那个**对话上。restore() 自己只会落"最近更新的那个"，
+    // 人手切走的对话就被盖掉了（2026-10-17 用户报的："我切到第一个对话，关掉再开它是第二个"）。
+    // ui-state 里只存了 id：标签顺序按 updatedAt 排，位置每次开都可能不一样。
+    // 它通常在 restore 之前就到了（同一趟请求，起手就发出去的）；没到就等它 —— 带超时。
+    // 找不到那个 id（对话被删了 / 那次没写进去）→ 保持 restore 的默认落点，不报错、不空屏。
+    const ui = await uiStateP;
+    if (ui && ui.active) panels.agent.selectSavedConv(ui.active);
     blog('conv', restored
       ? i18n.t('boot.conv.restored', { n: restored, msgs })
       : i18n.t('boot.conv.none'));
+    panels.agent.refreshArtOpts();       // 恢复出来的对话可能停着配置界面 → 候选项补齐
+    applyConvArt();                      // 落在的那个对话自己带的形象才是该显示的那个（必须在选完标签之后）
+    // 标签被整体换掉了 → 调试参数重新落到"现在这个对话"身上（不然 ?mood= 只作用在一份
+    // 马上就被丢弃的起手对话上，看着像没生效）
+    applyMoodDebug();
   }).catch(() => {});
 
   // 页面被隐藏 / 关掉时，把防抖窗口里剩下的内容立刻落盘（刷新、关窗都算）
-  window.addEventListener('pagehide', () => { try { panels.agent.flushSaves(); } catch (e) { /* 尽力而为 */ } });
+  window.addEventListener('pagehide', () => {
+    try { panels.agent.flushSaves(); } catch (e) { /* 尽力而为 */ }
+    try { moodSaver.flush(); } catch (e) { /* 同上 */ }
+  });
   // 过场走到一半改窗口大小的话，起止矩形都作废了 —— 直接跳到终态再按新尺寸排
   window.addEventListener('resize', () => { snapZoom(); grid.resize(); layout(); syncHidden(); });
   // 调试：?hscroll=N 让地球面板 IP 说明初始横向偏移 N 列（验证左右滚动用，永久固定不自动）

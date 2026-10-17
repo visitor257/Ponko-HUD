@@ -19,6 +19,7 @@ mockup/_*
 # 开发过程截图（只用于远程验证结果，运行时不读）
 app/shots/
 mockup/shots/
+_tmp_view/
 
 # 编辑器 / 系统
 .vscode/

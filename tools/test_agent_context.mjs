@@ -21,6 +21,9 @@ const BACKEND_PORT = 8792;
 const MOCK_URL = `http://127.0.0.1:${MOCK_PORT}`;
 const BACK = `http://127.0.0.1:${BACKEND_PORT}`;
 const KEY = 'sk-context-test';
+// LLM 配置是**每个对话一份**的：测试里给对话装一份假的，send() 才会真的往 /api/agent 发
+// （没配的话 send() 只会弹配置框，一个字节都发不出去）。
+const FAKE_LLM = { baseUrl: 'http://127.0.0.1:1/v1', apiKey: 'sk-test', model: 'm', provider: 'auto', resolved: '' };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
@@ -43,10 +46,10 @@ console.log('── 前端 send() 构造上下文 ──');
     };
   };
 
-  const moodCalls = [];
-  const mood = { touch() {}, fromAgent() { moodCalls.push('agent'); return true; } };
-  const a = new AgentPanel(mood);
-  a.llmConfigured = true;
+  // 心情从 2026-10-17 起是**每个对话自己一份**（AgentConv.mood），面板不再接一份全局的
+  // —— 这里直接 new，不再塞桩对象（原来那个 moodCalls 桩从来没被断言过，顺手删掉）。
+  const a = new AgentPanel();
+  a.tab.llm = { ...FAKE_LLM };
 
   // 两轮既有对话，其中 agent 那句带心情标记（不该回灌给 LLM）
   a.push('user', '我叫小明');
@@ -57,6 +60,11 @@ console.log('── 前端 send() 构造上下文 ──');
   const req = captured.find((c) => c.url.includes('/api/agent'));
   record('send() 真的发出了请求', !!req, captured.map((c) => c.url).join(','));
   record('请求体带了 history 字段', !!(req && Array.isArray(req.body.history)), JSON.stringify(req && req.body.history));
+
+  // 每个对话一份配置的关键：请求体里必须带上**这个对话自己**那份，
+  // 否则后端无从判断这个对话接的是哪家，只能退回演示用的假 agent。
+  record('请求体带了这个对话自己的 llm 配置',
+    !!(req && req.body.llm && req.body.llm.baseUrl === FAKE_LLM.baseUrl), JSON.stringify(req && req.body.llm));
 
   const h = (req && req.body.history) || [];
   record('history 里有上一轮提问', h.some((m) => m.role === 'user' && m.content === '我叫小明'), JSON.stringify(h));
@@ -72,8 +80,8 @@ console.log('── 前端 send() 构造上下文 ──');
   record('history 按时间先后排列（提问在回复之前）', iUser >= 0 && iAgent > iUser, `user@${iUser} agent@${iAgent}`);
 
   // 窗口裁剪：30 轮之后只保留最近 20 条
-  const a2 = new AgentPanel(mood);
-  a2.llmConfigured = true;
+  const a2 = new AgentPanel();
+  a2.tab.llm = { ...FAKE_LLM };
   for (let i = 0; i < 20; i++) { a2.push('user', 'u' + i); a2.push('agent', 'a' + i); }
   captured.length = 0;
   a2.busy = false;
@@ -103,10 +111,11 @@ console.log('\n── 收尾心情落地 ──');
     };
   };
 
+  // 探针挂在**这个对话自己的**那份 Mood 上（心情每对话一份，见 AgentConv 构造函数）
   const applied = [];
-  const mood = { touch() {}, fromAgent(ev) { applied.push(ev); return true; }, fromLocal() {} };
-  const a = new AgentPanel(mood);
-  a.llmConfigured = true;
+  const a = new AgentPanel();
+  a.tab.mood.fromAgent = (ev) => { applied.push(ev); return true; };
+  a.tab.llm = { ...FAKE_LLM };
   a.send('你好');
   await new Promise((r) => setTimeout(r, 80));      // 等假流走完
 
@@ -151,11 +160,16 @@ const HISTORY = [
 ];
 const CUR = '还记得我是谁吗';
 
+// 后端要连哪家 LLM：现在是**每个请求自带配置**（不再有全局那份可以"先存后聊"）。
+// 测试里用这个变量装着，想换协议就重新赋值 —— 正好顺带演示：同一个后端进程里，
+// 两次对话完全可以接不同的模型/协议，互不干扰。
+let LLM = { baseUrl: '', apiKey: '', model: '', provider: 'auto', resolved: '' };
+
 async function call(history, cur = CUR) {
   lastBody = null;
   const r = await fetch(BACK + '/api/agent', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text: cur, history }),
+    body: JSON.stringify({ text: cur, history, ...(LLM.baseUrl ? { llm: LLM } : {}) }),
   });
   await r.text();                         // 把流读完，确保后端已发完请求
   return lastBody;
@@ -163,10 +177,7 @@ async function call(history, cur = CUR) {
 
 (async () => {
   await new Promise((r) => mock.listen(MOCK_PORT, '127.0.0.1', r));
-  const cfgPath = path.join(ROOT, 'server', 'llm-config.json');
-  const hadCfg = fs.existsSync(cfgPath);
-  const backup = hadCfg ? fs.readFileSync(cfgPath, 'utf8') : null;
-
+  // 配置不再落任何全局文件，所以这里没有"测试前后要还原的现场"。
   const backend = spawn(process.execPath, ['server/server.js'], {
     cwd: ROOT, env: { ...process.env, PONKO_PORT: String(BACKEND_PORT) }, stdio: 'ignore',
   });
@@ -177,12 +188,8 @@ async function call(history, cur = CUR) {
   }
   if (!up) { console.log('后端没起来，测试中止'); mock.close(); backend.kill(); process.exit(3); }
 
-  const save = (b) => fetch(BACK + '/api/llm/config', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b),
-  }).then((r) => r.json());
-
   // OpenAI 兼容
-  await save({ baseUrl: MOCK_URL, apiKey: KEY, model: 'gpt-x', provider: 'openai' });
+  LLM = { baseUrl: MOCK_URL, apiKey: KEY, model: 'gpt-x', provider: 'openai', resolved: 'openai' };
   let b = await call(HISTORY);
   record('history 为空时只有 system + 本次提问', await (async () => {
     const only = await call([], CUR);
@@ -207,7 +214,7 @@ async function call(history, cur = CUR) {
     String(bd.messages.filter((m) => m.content === CUR).length));
 
   // Anthropic 原生
-  await save({ baseUrl: MOCK_URL, apiKey: KEY, model: 'claude-x', provider: 'anthropic' });
+  LLM = { baseUrl: MOCK_URL, apiKey: KEY, model: 'claude-x', provider: 'anthropic', resolved: 'anthropic' };
   const ba = await call(HISTORY);
   const ams = (ba && ba.messages) || [];
   record('Anthropic：system 走单独字段', !!ba.system && !ams.some((m) => m.role === 'system'), typeof ba.system);
@@ -218,7 +225,6 @@ async function call(history, cur = CUR) {
   for (let i = 1; i < ams.length; i++) if (ams[i].role === ams[i - 1].role) alt = false;
   record('Anthropic：user/assistant 严格交替', alt, JSON.stringify(ams.map((m) => m.role)));
 
-  try { if (backup !== null) fs.writeFileSync(cfgPath, backup); else fs.unlinkSync(cfgPath); } catch (e) {}
   backend.kill();
   mock.closeAllConnections?.();
   mock.closeIdleConnections?.();

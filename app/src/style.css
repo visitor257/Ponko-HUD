@@ -1,4 +1,15 @@
 /* Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD */
+
+/* 克林贡文 pIqaD 用的字体（U+F8D0 起的私用区，Windows 自带字体一个字形都没有，
+   不自带就整屏豆腐块）。字体是 SIL OFL 授权的 pIqaD qolqoS，原样分发、未改动，
+   授权全文在 assets/fonts/pIqaD-qolqoS-OFL.txt。
+   ⚠ 字体里的族名是保留名（Reserved Font Name），别改这个 font-family 的写法。 */
+@font-face {
+  font-family: "pIqaD qolqoS";
+  src: url("../assets/fonts/pIqaD-qolqoS.ttf") format("truetype");
+  font-display: swap;
+}
+
 html, body {
   margin: 0; padding: 0; height: 100%; overflow: hidden;
   background: #080c10;

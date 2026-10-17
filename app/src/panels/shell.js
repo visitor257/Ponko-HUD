@@ -11,7 +11,8 @@
 // 后台标签的 PTY 流也不退订 —— 切回来屏幕内容、滚屏位置都还在。
 import { ATTR, mix } from '../grid.js';
 import { TAB_COLORS } from '../tabcolors.js';
-import { runShell, abortShell, ptyWrite, ptyResize, ptyStop, ptyClose, ptyStream, shellState } from '../api.js';
+import { runShell, abortShell, ptyWrite, ptyResize, ptyStop, ptyClose, ptyStream, shellState,
+  completeShell } from '../api.js';
 // 只为了 `lang` 这条面板命令：它要报"现在是什么语言 / 有哪些可选 / 切过去"。
 // 语言清单只有 i18n 那份（availableLangs），这里不另抄一张表。
 import { availableLangs, langOf, useLang, t } from '../i18n/index.js';
@@ -228,7 +229,6 @@ export class ShellTab {
       return;
     }
     this.busy = true;
-    this.mood.touch();
     // 命令成败是事实，不是情绪——是否反映到心情上由 agent 决定
     // （想让 shell 反向影响时加 ?local=1，或直接改 mood.localSignals）
     this._cancel = runShell(c, (e) => {
@@ -253,13 +253,11 @@ export class ShellTab {
           if (e.error === 'timeout') this.pushT('err', 'ui.shell.timeout');
           else this.pushT('err', 'ui.shell.exitCode', { code: e.code });
           if (this.mood.localSignals) this.mood.fromLocal('error', 'ui.shell.cmdFailed');
-          else this.mood.touch();
-        } else this.mood.touch();
+        }
       } else if (e.t === 'error') {
         this.busy = false;
         this.push('err', e.text);                 // 后端给的错误原文 —— 数据，不翻
         if (this.mood.localSignals) this.mood.fromLocal('error', 'ui.shell.shellError');
-        else this.mood.touch();
       }
     }, undefined, this.id);
   }
@@ -288,6 +286,68 @@ export class ShellTab {
     this._histShown = this.input;
     this.caret = this.input.length;
     return true;
+  }
+
+  /**
+   * Tab 补全（**只在管道模式**：真终端里 Tab 是原样发给程序的 —— `pty pwsh` / `pty python`
+   * 的补全由那个程序自己做，权限比我们大得多，这里别去抢）。
+   *
+   * 为什么要问后端：管道模式下 cwd 底下有什么，前端根本不知道（浏览器没有文件系统）。
+   * 后端拿**会话里那份 cwd**（不是前端这份可能还没同步的镜像）列目录 + 扫 PATH 出命令名，
+   * 回候选和"这个词在行里的替换范围"；插入、公共前缀、候选太多时列出来，都在这一层做。
+   *
+   * @returns {Promise<boolean>} 输入行或屏幕有没有变化（false = 没补出东西，调用方别白同步）
+   */
+  async tabComplete() {
+    if (this.pty) return false;
+    const line = this.input;
+    const caret = Math.max(0, Math.min(this.caret, line.length));
+    let r = null;
+    try { r = await completeShell(this.id, line, caret); } catch (e) { return false; }
+    if (!r || !r.ok || !Array.isArray(r.items) || !r.items.length) return false;
+    // 等回包这几毫秒里用户又打字了 → 这份结果已经过期，丢掉（宁可这次不补，也不能把字吞了）
+    if (this.input !== line || this.caret !== caret) return false;
+
+    const q = r.quote || '';
+    // 引号要包回去（`cd "My Doc"` 补完不能把引号丢了）；没引号但结果里带空格 → 自己补一对
+    const wrap = (s) => (q ? q + s + q : (/\s/.test(s) ? '"' + s + '"' : s));
+
+    let ins = '';
+    if (r.items.length === 1) {
+      ins = wrap(r.items[0]);
+      // 文件补完接一个空格（这个参数打完了）；目录不接 —— 结尾那个 `\` 就是"进这一层"，
+      // 接着按 Tab 就能继续往里补，多一个空格反而把路径截断了。
+      if (!/\\$/.test(r.items[0])) ins += ' ';
+    } else if (r.common && r.common.length > r.prefix.length) {
+      ins = wrap(r.common);            // 有更长的公共前缀就先进到那一层，候选另外列出来
+    }
+    if (ins) {
+      this.input = line.slice(0, r.start) + ins + line.slice(r.end);
+      this.caret = r.start + ins.length;
+    }
+    if (r.items.length > 1) this._listCandidates(r.items);
+    return !!ins || r.items.length > 1;
+  }
+
+  /**
+   * 把候选铺成几行推上去（按估算宽度分栏；中文按两列算）。
+   * 只是"给你看看有哪些"，点不动也选不了 —— 真正的补全是再打几个字再按 Tab。
+   * 超过 100 个只列前 100（`C:` 底下那种上千项全铺上去会淹掉整个屏幕）。
+   */
+  _listCandidates(items) {
+    const CAP = 100;
+    const list = items.length > CAP ? items.slice(0, CAP) : items;
+    const width = (s) => { let n = 0; for (const ch of s) n += (ch.codePointAt(0) || 0) > 0x2e7f ? 2 : 1; return n; };
+    const maxW = Math.max(...list.map(width)) + 2;
+    const lineW = Math.max(20, (this.rect ? this.rect.w - 2 : 80));
+    const per = Math.max(1, Math.floor(lineW / maxW));
+    for (let i = 0; i < list.length; i += per) {
+      const row = list.slice(i, i + per)
+        .map((s) => s + ' '.repeat(Math.max(0, maxW - width(s))))
+        .join('').replace(/\s+$/, '');
+      this.push('info', row);
+    }
+    if (items.length > CAP) this.push('info', '…');
   }
 
   /** 面板主体（不含外框：外框由 ShellPanel 画，标签栏在框外顶部） */
@@ -473,6 +533,7 @@ export class ShellPanel {
   leavePty(reason) { if (this.tab) this.tab.leavePty(reason); }
   enterPty(cmd) { return this.tab ? this.tab.enterPty(cmd) : undefined; }
   onArrow(dir) { return this.tab ? this.tab.onArrow(dir) : true; }
+  tabComplete() { return this.tab ? this.tab.tabComplete() : Promise.resolve(false); }
   onWheel(d) { return this.tab ? this.tab.onWheel(d) : false; }
   push(kind, text) { if (this.tab) this.tab.push(kind, text); }
   pushT(kind, key, args) { if (this.tab) this.tab.pushT(kind, key, args); }

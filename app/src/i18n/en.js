@@ -20,7 +20,9 @@ export default {
   'ui.status.llmOff': 'local · no LLM',
   'ui.hint.zoomOn': '▚ {panel} zoomed · click 〼 at its corner to restore the split view',
   'ui.hint.zoomOff': '▚ focus={focus} · drag to select text · globe drags · splitter drags · ⛶ at a panel corner zooms',
-  'ui.hotkeys': '[TAB]switch [^⏎]send / Enter=newline [ESC]deselect/abort [^⇧C]or[^C]copy [^⇧T]new tab [^Tab]next tab (follows focus) [^M]mood [^⇧Q]quit [wheel]scroll',
+  // hotkey bar: the `[^M]mood` entry is gone — Ctrl+M was retired with the debug
+  // feature on 2026-10-17 (^M is Enter in a terminal, too easy to hit by accident).
+  'ui.hotkeys': '[TAB]switch [^⏎]send / Enter=newline [ESC]deselect/abort [^⇧C]or[^C]copy [^⇧T]new tab [^Tab]next tab (follows focus) [^⇧Q]quit [wheel]scroll',
 
   // ── 底部提示条（toast）
   'ui.toast.noSelection': 'nothing selected',
@@ -85,13 +87,29 @@ export default {
   'ui.agent.field.apiKey': 'API Key',
   'ui.agent.field.model': 'Model',
   'ui.agent.field.provider': 'Protocol',
-  'ui.agent.field.moodTags': 'Mood tags',
+  // "形象"（角色立绘包）译作 Character；Personality 留给下面新增的「性格」那一栏 ——
+  // 两条都叫 Persona* 的话，英文界面上分不清哪个是哪个。
+  'ui.agent.field.charpack': 'Character',
+  'ui.agent.field.persona': 'Personality',
+  'ui.agent.opt.personaDefault': 'natural',
+  'ui.agent.opt.personaTsundere': 'tsundere',
+  'ui.agent.opt.personaGenki': 'peppy',
+  'ui.agent.opt.personaSarcastic': 'sarcastic',
+  'ui.agent.opt.personaGentle': 'gentle',
   'ui.agent.opt.auto': 'auto-detect',
   'ui.agent.opt.openai': 'OpenAI-compatible',
   'ui.agent.opt.anthropic': 'Anthropic',
-  'ui.agent.opt.show': 'show',
-  'ui.agent.opt.hide': 'hide',
+  // "auto" for the character row: not "take the first pack", but let the configured model pick one
+  'ui.agent.opt.charpackAuto': 'auto',
+  'ui.agent.form.pickArt': 'letting the model pick a character…',
+  'ui.agent.form.pickArtFail': 'character not picked: {err} · using the default (save again to retry)',
+  // Left in the conversation after an auto pick (the status line is gone in a second, this stays)
+  'ui.agent.artAuto': 'character: {id} (picked by {model})',
   'ui.agent.form.hint': 'fill in address / key / model, then press Enter to save (the connection is verified first)',
+  // The form shown when "+" creates a conversation: only says edits stay local.
+  // It must NOT claim anything about where the values came from — the pre-fill is the conversation
+  // you were looking at when you pressed "+" (see _llmOfTab), and that one may have nothing at all.
+  'ui.agent.form.hintNew': 'new conversation · edits here affect only this conversation',
   'ui.agent.form.needBoth': 'the address and the key cannot be empty',
   'ui.agent.form.testing': 'verifying the connection…',
   'ui.agent.form.testFail': 'connection failed: {err}',
@@ -99,7 +117,7 @@ export default {
   'ui.agent.verifyOk': 'verified ({ms}ms{via}{pname}) ✓ saved',
   'ui.agent.form.saveFail': 'save failed: missing field',
   'ui.agent.form.saveError': 'save error: {err}',
-  'ui.agent.form.cantCancel': 'cannot cancel before it is configured',
+  'ui.agent.form.hintSkip': 'no LLM configured: this conversation cannot send yet · type /llm to bring the form back',
   'ui.agent.form.keys': 'TAB/↑↓ switch · ←→ change value · Enter saves · mouse clicks work too',
   'ui.agent.btn.testing': '[ checking ]',
   'ui.agent.btn.save': '[  save  ]',
@@ -108,27 +126,18 @@ export default {
   'ui.agent.status.on': 'linked',
 
   // ── MOOD / 主题
-  'ui.mood.idle': 'idle',
-  'ui.mood.think': 'thinking',
-  'ui.mood.stream': 'streaming',
-  'ui.mood.sleepy': 'sleepy',
-  'ui.mood.error': 'error',
+  // Mood **names** (idle / thinking / …) are not here: they belong to the character pack
+  // (pack.json's moods.<tag>.label, resolved by moodLabel() in mood.js).
+  // The entries below are *status notes* shown when the mood falls back locally.
   'ui.mood.srcLocal': 'local',
   'ui.mood.srcManual': 'manual',
   'ui.mood.waiting': 'waiting for the agent',
   'ui.mood.manualOverride': 'manual override (debug)',
-  'ui.mood.staleAgent': '(local) the agent stopped updating the mood',
-  'ui.mood.quiet': '(local) no agent activity for a long while',
-  'ui.theme.idle': 'calm · idle',
-  'ui.theme.think': 'focused · thinking',
-  'ui.theme.stream': 'excited · streaming',
-  'ui.theme.sleepy': 'drowsy · low power',
-  'ui.theme.error': 'down · error',
 
-  // ── CHAR 面板（'loading…' / 'mood N / 100' 本来就是英文，写死不进字典）
-  'ui.char.style': 'blocks',
+  // ── CHAR panel ('loading…' / 'mood N / 100' are plain English, not in the dictionary)
+  //    The old ui.char.style* group (top-right render-path label) was dropped on 2026-10-15.
   'ui.char.missing': ' ✗missing',
-  'ui.char.history': 'mood history',
+  // 'ui.char.history' was removed on 2026-10-17 together with the sparkline itself.
 
   // ── GLOBE 面板（IP / 城市名是数据，不进字典）
   'ui.globe.decor': 'decorative',
@@ -154,6 +163,8 @@ export default {
   'boot.ui.engine.unknown': 'unknown',
   'boot.ui.layout': 'layout done · {cols}×{rows} · {panels} panels · {rects} rects',
   'boot.ui.repaint': 'full repaint {ms}ms · {cells} cells',
+  // same picture as when you quit: the mood snapshot came back from run/ui-state.json
+  'boot.ui.moodRestored': 'mood snapshot restored {ms} · now {mood}',
   'boot.pack.loaded': '{id} loaded · {n} moods · frames decoded on demand',
   'boot.pack.none': 'no character pack found → the char panel sits this one out',
   'boot.sys.ok': 'GET /api/sys {ms} · CPU {cpu}% · mem {used}/{total}GB {pct}%{disk}{gpu} · uptime {up}h',
@@ -195,8 +206,9 @@ export default {
   'boot.node.runtime': 'Node {ver} · {platform} {arch} · pid {pid} · ppid {ppid}',
   'boot.node.root': 'project root {root}',
   'boot.node.stale': 'boot.log holds {n} leftover line(s) from a previous run · not counted',
-  'boot.llm.on': 'LLM connected · {host} · model {model} · protocol {proto} · key stored (never echoed)',
-  'boot.llm.off': 'not configured → fill in the address and key in the AGENT panel (kept locally in server/llm-config.json)',
+  // Config is per conversation now (there is no global one), so on describes the most recently used one
+  'boot.llm.on': 'LLM connected · {host} · model {model} · protocol {proto} · key stored per conversation',
+  'boot.llm.off': 'scanned {n} conversation archives, none configured → fill in the address and key when creating one (per conversation)',
   'boot.pack.count': '{packs} character packs · {moods} moods · {frames} frame files · {size}',
   'boot.pty.fail': '{bin} could not start ({err}) → real terminal /api/pty unavailable · pipe mode still works',
   'boot.pty.ok': '{out} · {bin} · probe {ms}ms · bridge server/ptybridge.py',

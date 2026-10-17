@@ -1,0 +1,89 @@
+{
+  "id": "ponko",
+  "name": "ponko",
+  "grid": {
+    "cols": 48,
+    "rows": 28,
+    "charset": "block"
+  },
+  "moods": {
+    "angry": {
+      "frames": [
+        "angry.ans"
+      ],
+      "fps": 0,
+      "loop": false,
+      "label": {
+        "en": "angry",
+        "zh-cn": "生气",
+        "ru": "злость",
+        "tlh": ""
+      }
+    },
+    "error": {
+      "frames": [
+        "error.ans"
+      ],
+      "fps": 0,
+      "loop": false,
+      "label": {
+        "en": "error",
+        "zh-cn": "出错",
+        "ru": "ошибка",
+        "tlh": ""
+      }
+    },
+    "idle": {
+      "frames": [
+        "idle.ans"
+      ],
+      "fps": 0,
+      "loop": false,
+      "label": {
+        "en": "idle",
+        "zh-cn": "待机",
+        "ru": "ожидание",
+        "tlh": ""
+      }
+    },
+    "sleepy": {
+      "frames": [
+        "sleepy.ans"
+      ],
+      "fps": 0,
+      "loop": false,
+      "label": {
+        "en": "sleepy",
+        "zh-cn": "瞌睡",
+        "ru": "сонливость",
+        "tlh": ""
+      }
+    },
+    "streaming": {
+      "frames": [
+        "streaming.ans"
+      ],
+      "fps": 0,
+      "loop": false,
+      "label": {
+        "en": "streaming",
+        "zh-cn": "输出",
+        "ru": "поток",
+        "tlh": ""
+      }
+    },
+    "thinking": {
+      "frames": [
+        "thinking.ans"
+      ],
+      "fps": 0,
+      "loop": false,
+      "label": {
+        "en": "thinking",
+        "zh-cn": "思考",
+        "ru": "размышление",
+        "tlh": ""
+      }
+    }
+  }
+}

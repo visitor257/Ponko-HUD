@@ -2,6 +2,8 @@
 // Ponko-HUD 本地后端：纯 Node 标准库，零第三方依赖
 //   GET  /api/sys            系统快照
 //   POST /api/shell          执行 shell 命令（NDJSON 流：out/err/exit）
+//   GET  /api/shell/state?s=id  这个标签的 shell 种类 + 真实工作目录
+//   GET  /api/complete?s=id&line=…&caret=…  Tab 补全（管道模式：候选 + 这个词在行里的范围）
 //   POST /api/agent          agent 对话（NDJSON 流：mood/thinking/token/tool/done）
 //                            ★ mood 事件完全由 agent 的正文标记产出，后端不推断情绪
 //   GET  /api/mood/protocol  心情协议：状态枚举 + 可用表情 + 给 LLM 的 system 提示词
@@ -10,6 +12,8 @@
 //   GET  /api/convs          对话存档清单（AGENT 多标签）
 //   GET  /api/conv?s=id      取一个对话全文 / POST 落盘 / POST /api/conv/delete 删除
 //                            ★ 存在 run/conversations/，该目录不入库 → 对话不会被推上 GitHub
+//   GET  /api/ui-state       界面状态（心情快照 + 落在哪个对话）/ POST 存下"这一刻长什么样"
+//                            ★ 存在 run/ui-state.json：关掉再开，配色、立绘、停在哪个对话都跟退出前一致
 //   /*                       静态文件（app/ 目录）
 const http = require('http');
 const fs = require('fs');
@@ -19,14 +23,20 @@ const bootlog = require('./bootlog');
 const sysinfo = require('./sysinfo');
 const netgeo = require('./netgeo');
 const moodp = require('./moodprotocol');
+const complete = require('./complete');
 const { PtySession, getSession: getPtySession, dropSession: dropPtySession,
   listSessions: listPtySessions, normSession } = require('./pty');
 
-// ─────────────────────────────── LLM 接入配置（本地持久化到 llm-config.json）
-// 用户在前端填 API 地址 / API Key / 模型；配好后 /api/agent 改走真 LLM 流式调用。
-const LLM_CFG_PATH = path.join(__dirname, 'llm-config.json');
+// ─────────────────────────────── LLM 接入配置（**每个对话一份**，跟着对话存档走）
+//
+// 以前这里是一份进程级全局配置（server/llm-config.json），所有对话共用同一个地址与 Key，
+// 想换个模型就得改全局、改完全部对话跟着变。现在改成**每个对话一份**：配置存在对话自己的
+// 存档里（run/conversations/<id>.json），发消息时随请求一起带上来，后端拿请求里那份去调模型
+// —— 不再有任何跨对话共享的可变状态。于是不同对话可以接不同的中转站 / 模型
+// （一个省钱跑批、一个要强的写代码），互不干扰，也不用"切之前先改配置"。
+// 用户在前端填 API 地址 / API Key / 模型；填好并验证通过才写进那个对话。
 // provider  = 用户的选择：auto（自动识别）/ openai（OpenAI 兼容）/ anthropic（Claude 原生）
-// resolved  = 自动识别后实际用到的协议，写盘后对话时就不用再猜
+// resolved  = 自动识别后实际用到的协议，存下来之后对话就不用再猜
 // rawProvider：只认两个真协议，其它（含空串）一律 ''（= 还没识别/不适用）
 // normProvider：在 rawProvider 之上把空值补成 auto，用于"用户意图"字段
 function rawProvider(p) {
@@ -36,40 +46,38 @@ function rawProvider(p) {
 function normProvider(p) {
   return rawProvider(p) || 'auto';
 }
-let llmCfg = { baseUrl: '', apiKey: '', model: '', provider: 'auto', resolved: '', configured: false };
-(function loadLlmCfg() {
-  try {
-    const j = JSON.parse(fs.readFileSync(LLM_CFG_PATH, 'utf8'));
-    llmCfg = Object.assign({ baseUrl: '', apiKey: '', model: '' }, j);
-  } catch (e) { /* 没有配置文件就用默认值 */ }
-  llmCfg.provider = normProvider(llmCfg.provider);
-  llmCfg.resolved = rawProvider(llmCfg.resolved);
-  llmCfg.configured = !!(llmCfg.baseUrl && llmCfg.apiKey);
-})();
-function saveLlmCfg(cfg) {
-  const prov = normProvider(cfg.provider || llmCfg.provider);
-  llmCfg = {
-    baseUrl: (cfg.baseUrl || '').trim(),
-    apiKey: (cfg.apiKey || '').trim(),
-    model: (cfg.model || llmCfg.model || 'gpt-3.5-turbo').trim(),
-    provider: prov,
-    // 显式选了协议就等于确定了（resolved 同步过去）；auto 则以探测结果为准
-    resolved: rawProvider(cfg.resolved) || (prov === 'auto' ? '' : prov),
-  };
-  llmCfg.configured = !!(llmCfg.baseUrl && llmCfg.apiKey);
-  try { fs.writeFileSync(LLM_CFG_PATH, JSON.stringify(llmCfg, null, 2)); } catch (e) { /* 写不了就内存里用着 */ }
-  return publicLlmCfg();
-}
-// 不回传明文 key，只告诉前端"有没有配过"
-function publicLlmCfg() {
+/**
+ * 把外面传进来的配置洗成后端内部用的形状。**地址与 Key 缺任一个就返回 null**
+ * （= 这个对话还没配），调用方据此决定走真模型还是演示用的假 agent。
+ * 洗这一道有两个用处：① 存档 / 请求里的怪值（null、数字、超长串）统一收敛成干净形状；
+ * ② "配没配"这件事只有这一个判断入口，不会散落到各处各判一遍。
+ */
+function llmOf(cfg) {
+  const baseUrl = String((cfg && cfg.baseUrl) || '').trim();
+  const apiKey = String((cfg && cfg.apiKey) || '').trim();
+  if (!baseUrl || !apiKey) return null;
   return {
-    configured: llmCfg.configured, baseUrl: llmCfg.baseUrl, model: llmCfg.model,
-    hasKey: !!llmCfg.apiKey, provider: llmCfg.provider, resolved: llmCfg.resolved || '',
+    baseUrl,
+    apiKey,
+    // model **不在这里兜底**：OpenAI 与 Anthropic 的默认模型不是一回事，
+    // 统一填 gpt-3.5-turbo 会让 Anthropic 那条路拿到一个 OpenAI 的模型名。
+    model: String((cfg && cfg.model) || '').trim(),
+    provider: normProvider(cfg && cfg.provider),
+    resolved: rawProvider(cfg && cfg.resolved),
   };
 }
-// 对话时真正用的协议：探测结果优先，其次用户显式选择，都没有就按 OpenAI 兼容走
-function activeProvider() {
-  return rawProvider(llmCfg.resolved) || rawProvider(llmCfg.provider) || 'openai';
+/** 对话时真正用的协议：探测结果优先，其次用户显式选择，都没有就按 OpenAI 兼容走 */
+function activeProvider(cfg) {
+  return rawProvider(cfg && cfg.resolved) || rawProvider(cfg && cfg.provider) || 'openai';
+}
+
+// 形象（角色素材包）id：要么是 'auto'，要么是一个干净的目录名。
+// 只认这一种形状 —— 前端传上来的、存档里躺着的一律过这里收敛，
+// 免得脏值被拼进 /characters/... 的路径里。
+const ART_ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
+function normArtOf(v) {
+  const s = String(v === undefined || v === null ? '' : v).trim();
+  return (s === 'auto' || ART_ID_RE.test(s)) ? s : 'auto';
 }
 
 // ─────────────────────────── LLM 连通性验证（保存前必须真的打一次接口）
@@ -162,9 +170,11 @@ async function probeAnthropic(base, apiKey, model, t0) {
 }
 
 async function testLlm(cfg) {
-  const base = String((cfg && cfg.baseUrl) || llmCfg.baseUrl || '').trim();
-  const apiKey = String((cfg && cfg.apiKey) || llmCfg.apiKey || '').trim();
-  const model = String((cfg && cfg.model) || llmCfg.model || '').trim() || 'gpt-3.5-turbo';
+  // 探测是**纯只读**的：只拿传进来的这份配置去试，不写任何文件、不碰任何对话。
+  // 以前这里会回退到全局 llmCfg，于是前端字段空着也能"探测通过"——那等于什么都没验。
+  const base = String((cfg && cfg.baseUrl) || '').trim();
+  const apiKey = String((cfg && cfg.apiKey) || '').trim();
+  const model = String((cfg && cfg.model) || '').trim() || 'gpt-3.5-turbo';
   if (!base) return { ok: false, error: '缺少 API 地址' };
   if (!apiKey) return { ok: false, error: '缺少 API Key' };
 
@@ -175,7 +185,7 @@ async function testLlm(cfg) {
   }
 
   const t0 = Date.now();
-  const want = normProvider((cfg && cfg.provider) || llmCfg.provider);
+  const want = normProvider(cfg && cfg.provider);
   if (want === 'anthropic') return probeAnthropic(base, apiKey, model, t0);
   if (want === 'openai') return probeOpenAI(base, apiKey, model, t0);
 
@@ -189,10 +199,135 @@ async function testLlm(cfg) {
   return { ok: false, ms: Date.now() - t0, error: pick.error, models: pick.models, tried: ['openai', 'anthropic'] };
 }
 
+// ── 一次**非流式**问答（给"让模型自己挑形象"这种内部小任务用）──────────────
+// 跟对话那条流式路完全分开：这里只要一个完整回包、不要 SSE、不进任何存档。
+// 两种协议各写一遍报文（跟 callRealLLM / callAnthropic 那两份是同源约定，别各改各的）。
+async function chatOnce(cfg, sys, user, maxTokens) {
+  const base = String((cfg && cfg.baseUrl) || '').trim().replace(/\/+$/, '');
+  if (!base) return { ok: false, error: '缺少 API 地址' };
+  const prov = activeProvider(cfg);
+  const model = String((cfg && cfg.model) || '').trim();
+  let url, headers, body;
+  if (prov === 'anthropic') {
+    url = base.replace(/\/v1$/, '') + '/v1/messages';
+    headers = {
+      'Content-Type': 'application/json',
+      'x-api-key': cfg.apiKey,
+      'anthropic-version': ANTHROPIC_VERSION,
+    };
+    body = { model: model || 'claude-3-5-sonnet-latest', max_tokens: maxTokens, system: sys, messages: [{ role: 'user', content: user }] };
+  } else {
+    url = llmV1(base) + '/chat/completions';
+    headers = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + cfg.apiKey };
+    body = { model: model || 'gpt-3.5-turbo', messages: [{ role: 'system', content: sys }, { role: 'user', content: user }], temperature: 0, stream: false };
+    if (maxTokens) body.max_tokens = maxTokens;
+  }
+  let resp;
+  try { resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(30000) }); }
+  catch (e) { return { ok: false, error: '连不上 LLM：' + e.message }; }
+  if (!resp.ok) {
+    let detail = '';
+    try { detail = (await resp.text()).slice(0, 200); } catch (e) { /* 读不出来就算了 */ }
+    return { ok: false, error: `LLM 返回 ${resp.status}：${detail}` };
+  }
+  let j = null;
+  try { j = await resp.json(); } catch (e) { return { ok: false, error: '回包不是 JSON' }; }
+  const text = prov === 'anthropic'
+    ? (Array.isArray(j && j.content) ? j.content.filter((c) => c && c.type === 'text').map((c) => c.text || '').join('') : '')
+    : String((j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '');
+  if (!text.trim()) return { ok: false, error: '模型没给出内容' };
+  return { ok: true, text: text.trim() };
+}
+
+/**
+ * 「自动」形象：把候选清单交给**这个对话配好的模型**，让它自己选一个。
+ *
+ * 解析故意写得宽容：模型经常回 "ponko"、"我选 ponko"、"`ponko`"、甚至带解释的一段话 ——
+ * 只要回包里**出现了某个候选 id**(按词边界匹配)，就算它选了那个。
+ * 一个都没匹配上就如实报错（宁可不换，也不猜一个装成"它就想要这个"）。
+ */
+async function pickArt(cfg, packs) {
+  const cands = (Array.isArray(packs) ? packs : [])
+    .map((p) => ({ id: String((p && p.id) || '').trim(), name: String((p && p.name) || '').trim() }))
+    .filter((p) => ART_ID_RE.test(p.id));
+  if (!cands.length) return { ok: false, error: '没有可选的素材包' };
+  if (cands.length === 1) return { ok: true, id: cands[0].id, only: true, ms: 0 };
+
+  const sys = '你在为一个本地桌面助手挑一个"形象"（角色立绘素材包）。'
+    + '只回你选中的那个 id，不要解释、不要标点、不要别的字。';
+  const user = '可选形象：\n'
+    + cands.map((p) => `- ${p.id}${p.name && p.name !== p.id ? `（${p.name}）` : ''}`).join('\n')
+    + '\n\n挑一个最适合你的，只回 id。';
+  const t0 = Date.now();
+  const r = await chatOnce(cfg, sys, user, 24);
+  if (!r.ok) return { ok: false, error: r.error, ms: Date.now() - t0 };
+  // 优先整条就是一个 id（最常见的合规回答）；否则退一步找"出现过的候选"。
+  const raw = r.text.trim().replace(/^[`"'\s]+|[`"'\s.。！!]+$/g, '');
+  let hit = cands.find((p) => p.id.toLowerCase() === raw.toLowerCase());
+  if (!hit) {
+    const lower = r.text.toLowerCase();
+    hit = cands.find((p) => new RegExp(`(^|[^a-z0-9_-])${p.id.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^a-z0-9_-])`).test(lower));
+  }
+  if (!hit) return { ok: false, error: `它回的不是候选里的形象：${r.text.slice(0, 60)}`, ms: Date.now() - t0 };
+  return { ok: true, id: hit.id, said: r.text.slice(0, 120), ms: Date.now() - t0 };
+}
+
 const ROOT = path.resolve(__dirname, '..');
 const APP = path.join(ROOT, 'app');
 const CHARS = path.join(ROOT, 'characters');
 const PORT = Number(process.env.PONKO_PORT || 8787);
+
+// ─────────────────────────────── 对话存档（AGENT 多标签 = 多个对话）
+//
+// 存到 run/conversations/<id>.json。**run/ 已经写在 .gitignore 与推送脚本的排除项里**，
+// 所以对话内容只在本机留着，绝不会跟着代码推上 GitHub —— 这正是放这里的理由。
+// 为什么不用 localStorage：① WebView2 里它未必可用（隐私模式 / 异常状态）；
+// ② 服务端写盘与前端渲染解耦，重启后一次 GET 就能把标签栏全量恢复；
+// ③ 前端崩了 / 刷新了，内容也已经在盘上。
+//
+// ⚠ 这一段必须**早于下面的启动自检**：自检会立即扫这个目录说"有几个对话存档"。
+// 之前它写在文件后半段，而 const 不提升 —— 启动时访问 CONV_DIR 抛 ReferenceError，
+// 又被 listConvs 里那句 try/catch 当成"目录读不了"给吞了，于是启动画面那行
+// 「对话存档」永远显示"没有对话"，哪怕盘上明明存着好几个。提到最前面就对了。
+// PONKO_CONV_DIR 是**给验证脚本用的**：把存档指到一个临时目录，验证时就碰不到
+// 用户本机那份真实对话（那些文件里有明文 Key，误删误改是不可逆的）。
+// 正常启动不设这个变量 → 还是 run/conversations。
+const CONV_DIR = process.env.PONKO_CONV_DIR
+  ? path.resolve(process.env.PONKO_CONV_DIR)
+  : path.join(ROOT, 'run', 'conversations');
+const CONV_ID_RE = /^[A-Za-z0-9_-]{1,40}$/;          // 同时挡住 ../ 之类的路径穿越
+const CONV_MAX = 8;                                  // 最多几个对话标签（= 前端色板容量）
+const CONV_MAX_MSGS = 300;
+const CONV_MAX_TEXT = 20000;                         // 单条消息上限，别让一个文件无限长
+const CONV_ROLES = new Set(['user', 'agent', 'think', 'tool', 'mood', 'info']);
+
+// ─────────────────────────────── 界面状态（重启后画面要跟关掉时一样）
+//
+// 存两样东西，都是"这一刻屏幕长什么样"，不是"内容"：
+//   ① **心情快照**（state/face/note/intensity/来源）—— 2026-10-15 用户报的
+//      "mood 也变回 idle 了，应该和退出前一样才对"。
+//   ② **落在哪个对话上**（active = 对话 id）—— 2026-10-17 用户报的"切到第一个对话，
+//      关掉再开却落在第二个"。它不是某个对话的内容（内容在对话存档里），是"屏幕停在哪"。
+//      ⚠ 只记 **id**、不记下标：标签顺序每次重开都可能变（restore 按 updatedAt 排），
+//      记位置下次就指到别人身上了。
+//
+// 为什么**不放进对话存档**：① 心情虽然每对话一份（2026-10-17 改的，见 mood.js），
+// 但这份是"最后一帧"的缓存，写进对话存档等于让"看过的最后一帧"冒充"这个对话的状态"；
+// ② active 天生跨对话（它描述的正是"这些对话里选哪个"），塞进任何单个对话都不讲道理。
+//
+// 位置有个讲究：验证脚本会把 PONKO_CONV_DIR 指到一个临时目录（为的是不碰用户本机那份
+// 真存档）。这里跟着它走 —— 落到那个临时目录里、名字带前导点（`.ui-state.json`），
+// 于是 ① 验证跑完连文件一起删掉，② 那些"扫存档目录"的地方（listConvs / 启动自检）
+// 靠 CONV_ID_RE 认不出 `.ui-state` 这个名字，不会把它当成一个对话。
+// 不这样做的话，每跑一次验证都会拿一个 idle 快照盖掉用户本机那份（正好是用户要的效果的反面）。
+const UI_PATH = process.env.PONKO_UI_PATH
+  ? path.resolve(process.env.PONKO_UI_PATH)
+  : (process.env.PONKO_CONV_DIR
+    ? path.join(CONV_DIR, '.ui-state.json')
+    : path.join(ROOT, 'run', 'ui-state.json'));
+const UI_DIR = path.dirname(UI_PATH);
+const UI_MOOD_STATES = new Set(moodp.STATE_KEYS);    // 封闭枚举，跟 /api/mood/protocol 同源
+const UI_MOOD_SOURCES = new Set(['agent', 'auto', 'manual']);
 
 // ─────────────────────────────── 启动自检（真实记录 → 前端启动画面回放）
 //
@@ -233,10 +368,41 @@ if (bootlog.staleDropped) {
   bootlog.emit('node', 'boot.node.stale', { n: bootlog.staleDropped });
 }
 
-// LLM 接入：只说"配没配 / 连哪 / 什么协议"，永不回显 Key
-bootlog.emit('llm', llmCfg.configured ? 'boot.llm.on' : 'boot.llm.off', llmCfg.configured
-  ? { host: hostOf(llmCfg.baseUrl), model: llmCfg.model, proto: activeProvider() }
-  : {});
+/**
+ * 扫一遍对话存档：一共几个对话、其中**最近更新且配了 LLM** 的是哪个。
+ * 启动画面那行"接没接 LLM / 接的什么"只能这样回答 —— 配置现在散在各个对话里，
+ * 没有一份全局的可以一眼看穿了。只用来打日志：主机 / 模型 / 协议，Key 一个字都不往外带。
+ */
+function probeLlmCounts() {
+  let names = [];
+  try { names = fs.readdirSync(CONV_DIR); } catch (e) { return { total: 0, first: null }; }
+  const hits = [];
+  let total = 0;
+  for (const n of names) {
+    if (!n.endsWith('.json')) continue;
+    const id = n.slice(0, -5);
+    if (!CONV_ID_RE.test(id)) continue;
+    try {
+      const j = JSON.parse(fs.readFileSync(convPath(id), 'utf8'));
+      total++;
+      const llm = llmOf(j.llm);
+      if (llm) hits.push({ updatedAt: Number(j.updatedAt) || 0, llm });
+    } catch (e) { /* 坏存档跳过，别让一个坏文件把启动画面搞挂 */ }
+  }
+  if (!hits.length) return { total, first: null };
+  hits.sort((a, b) => b.updatedAt - a.updatedAt);      // 新 → 旧：说最近在用的那个
+  return { total, first: hits[0] };
+}
+
+// LLM 接入：配置是**每个对话一份**，所以这里扫存档说"有没有对话接了 / 连哪 / 什么协议"。
+// 只说这三样，**永不回显 Key**；一个都没配时，报"扫过几个存档都没配" —— 那也是实测出来的数，
+// 不是一句"未配置"的空话（启动画面的规矩：每行都得带真实测量痕迹，见 test_boot 第 6 节）。
+(function probeLlm() {
+  const { total, first } = probeLlmCounts();
+  bootlog.emit('llm', first ? 'boot.llm.on' : 'boot.llm.off', first
+    ? { host: hostOf(first.llm.baseUrl), model: first.llm.model || 'gpt-3.5-turbo', proto: activeProvider(first.llm) }
+    : { n: total });
+})();
 
 const ASSETS = assetStat();
 bootlog.emit('pack', ASSETS.packs ? 'boot.pack.count' : 'boot.pack.none', ASSETS.packs
@@ -296,12 +462,26 @@ const MIME = {
   '.jpg': 'image/jpeg',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
+  // 克林贡文 pIqaD 字体（app/assets/fonts/）。没有这一条会按 octet-stream 发，
+  // Chrome 对字体 MIME 卡得严，@font-face 直接不生效。
+  '.ttf': 'font/ttf',
+  '.woff2': 'font/woff2',
   '.map': 'application/json; charset=utf-8',
 };
 
 function sendJson(res, obj, code = 200) {
   const b = Buffer.from(JSON.stringify(obj));
-  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': b.length });
+  // 接口一律禁缓存，而且要用 no-store（不是 no-cache）：
+  //   这些响应都是**当前磁盘状态**的镜像（素材包清单、会话清单、系统信息…），
+  //   没有一个带 Last-Modified / ETag。少了这个头，Chromium 会把它们当启发式可缓存对象
+  //   落到 WebView2 的磁盘缓存里（实测 `run/webview-profile/**/Cache/Cache_Data` 里
+  //   就存着一条旧的 `/api/charpacks`（里面还是早就换掉的旧素材包），
+  //   换掉素材包之后重启可能读到旧清单 → 去取已经删掉的帧 → 角色面板一直 "loading…"。
+  res.writeHead(code, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': b.length,
+    'Cache-Control': 'no-store',
+  });
   res.end(b);
 }
 
@@ -719,7 +899,35 @@ function toChunks(body) {
   return out;
 }
 
-async function streamAgent(res, text, history) {
+/**
+ * /api/agent 里那两个"情绪相关"的可选参数 —— 都从请求体里来，都要挡脏值：
+ *   persona  性格 id（白名单见 moodp.PERSONAS）→ 非法一律回落 'default'
+ *   mood     "此刻心情"快照 {state, note, minutes} → 这里再校一遍，脏的当没给
+ *
+ * ⚠ **没带 mood 就是没有**，不许拿盘上那份兜底（2026-10-17 改）。
+ * 原来这里会退回 `readUiState().mood`：那是"整个屏幕最后一帧"的缓存，不是这个对话的心情。
+ * 心情改成每对话一份之后，那份缓存随时可能正写着**隔壁那个对话**的 anger ——
+ * 前端一旦少带一次（旧页面 / 手动 curl / 请求体拼漏了），模型就会被塞进别的对话的火气，
+ * 表现出来就是用户说的"记忆串通"。宁可这一轮不提心情，也不能提错人的心情。
+ */
+function agentMoodOpts(body) {
+  const persona = moodp.normPersona(body && body.persona);
+  const raw = (body && body.mood && typeof body.mood === 'object') ? body.mood : null;
+  let mood = null;
+  if (raw && moodp.STATES[raw.state]) {
+    const mins = Number(raw.minutes);
+    mood = {
+      state: raw.state,
+      // 只认 "agent 自己写过的那句" —— noteKey 那种是本地兜底 / 界面文案，
+      // 拿去当"你心里想的是…"等于凭空给模型塞一句它没说过的话（同前端 _moodBrief）
+      note: String(raw.note || raw.noteText || '').slice(0, 40),
+      minutes: (isFinite(mins) && mins >= 0) ? mins : 0,
+    };
+  }
+  return { persona, mood };
+}
+
+async function streamAgent(res, text, history, llm, opts) {
   res.writeHead(200, {
     'Content-Type': 'application/x-ndjson; charset=utf-8',
     'Cache-Control': 'no-cache',
@@ -728,8 +936,10 @@ async function streamAgent(res, text, history) {
   });
   const emit = (obj) => res.write(JSON.stringify(obj) + '\n');
 
-  // 已配置真 LLM → 走真模型；否则走内置假 agent（演示用，界面逻辑完全一致）
-  if (llmCfg.configured) { await callRealLLM(res, emit, text, history); res.end(); return; }
+  // 走真模型还是演示用的假 agent，**只看这个对话自己带没带配置**（地址+Key 都有）：
+  // 不再看任何进程级状态 —— 同一个后端进程里，A 对话可以接真模型、B 对话还在演示模式。
+  const cfg = llmOf(llm);
+  if (cfg) { await callRealLLM(res, emit, text, history, cfg, opts); res.end(); return; }
 
   // 真 LLM 的 token 会随意切开 [[mood:...]]，交给解析器跨片段还原
   const parser = new moodp.MoodStreamParser(facesFromPacks());
@@ -800,12 +1010,14 @@ function buildHistory(history, text) {
 // 真 LLM（SSE 流式）。两套协议：OpenAI 兼容 /chat/completions 与 Anthropic 原生 /messages。
 // 心情标记 [[mood:...]] 仍由原解析器处理，所以真模型只要按协议在正文里声明情绪，
 // 前端/角色链路一行都不用改。
-async function callRealLLM(res, emit, text, history) {
-  if (activeProvider() === 'anthropic') { await callAnthropic(res, emit, text, history); return; }
-  const base = (llmCfg.baseUrl || '').replace(/\/+$/, '');
+async function callRealLLM(res, emit, text, history, cfg, opts) {
+  if (activeProvider(cfg) === 'anthropic') { await callAnthropic(res, emit, text, history, cfg, opts); return; }
+  const base = (cfg.baseUrl || '').replace(/\/+$/, '');
   if (!base) { emit({ t: 'error', text: 'LLM 未配置：缺少 API 地址' }); return; }
   const url = base.replace(/\/v1$/, '') + '/v1/chat/completions';   // 兼容带或不带 /v1 的地址
-  const sys = moodp.buildSystemPrompt(facesFromPacks());
+  // opts = { persona, mood }：性格 + "此刻心情"。心情那一段是**情绪记忆**的关键，
+  // 见 moodprotocol.js 的 moodBriefing。
+  const sys = moodp.buildSystemPrompt(facesFromPacks(), opts);
   const messages = [{ role: 'system', content: sys }, ...buildHistory(history, text)];
   messages.push({ role: 'user', content: text });
 
@@ -813,8 +1025,8 @@ async function callRealLLM(res, emit, text, history) {
   try {
     resp = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + llmCfg.apiKey },
-      body: JSON.stringify({ model: llmCfg.model || 'gpt-3.5-turbo', stream: true, messages, temperature: 0.7 }),
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + cfg.apiKey },
+      body: JSON.stringify({ model: cfg.model || 'gpt-3.5-turbo', stream: true, messages, temperature: 0.7 }),
     });
   } catch (e) { emit({ t: 'error', text: '连不上 LLM：' + e.message }); return; }
   if (!resp.ok) {
@@ -861,11 +1073,11 @@ async function callRealLLM(res, emit, text, history) {
 // content_block_delta{ delta:{ type:'text_delta', text } }，跟 OpenAI 的 choices[0].delta 不是一回事。
 // 两个 Anthropic 特有的坑：system 必须单独字段（不能塞进 messages）；
 // user/assistant 必须严格交替（连续同角色要合并），否则 400。
-async function callAnthropic(res, emit, text, history) {
-  const base = (llmCfg.baseUrl || '').replace(/\/+$/, '');
+async function callAnthropic(res, emit, text, history, cfg, opts) {
+  const base = (cfg.baseUrl || '').replace(/\/+$/, '');
   if (!base) { emit({ t: 'error', text: 'LLM 未配置：缺少 API 地址' }); return; }
   const url = base.replace(/\/v1$/, '') + '/v1/messages';
-  const sys = moodp.buildSystemPrompt(facesFromPacks());
+  const sys = moodp.buildSystemPrompt(facesFromPacks(), opts);
 
   const raw = [...buildHistory(history, text), { role: 'user', content: text }];
   // 合并连续同角色 + 保证首条是 user（Anthropic 要求严格交替，否则 400）
@@ -885,11 +1097,11 @@ async function callAnthropic(res, emit, text, history) {
       headers: {
         'Content-Type': 'application/json',
         Accept: 'text/event-stream',
-        'x-api-key': llmCfg.apiKey,
+        'x-api-key': cfg.apiKey,
         'anthropic-version': ANTHROPIC_VERSION,
       },
       body: JSON.stringify({
-        model: llmCfg.model || 'claude-3-5-sonnet-latest',
+        model: cfg.model || 'claude-3-5-sonnet-latest',
         max_tokens: 1024,
         system: sys,
         messages,
@@ -949,17 +1161,8 @@ function facesFromPacks() {
 
 // ─────────────────────────────── 对话存档（AGENT 多标签 = 多个对话）
 //
-// 存到 run/conversations/<id>.json。**run/ 已经写在 .gitignore 与推送脚本的排除项里**，
-// 所以对话内容只在本机留着，绝不会跟着代码推上 GitHub —— 这正是放这里的理由。
-// 为什么不用 localStorage：① WebView2 里它未必可用（隐私模式 / 异常状态）；
-// ② 服务端写盘与前端渲染解耦，重启后一次 GET 就能把标签栏全量恢复；
-// ③ 前端崩了 / 刷新了，内容也已经在盘上。
-const CONV_DIR = path.join(ROOT, 'run', 'conversations');
-const CONV_ID_RE = /^[A-Za-z0-9_-]{1,40}$/;          // 同时挡住 ../ 之类的路径穿越
-const CONV_MAX = 8;                                  // 最多几个对话标签（= 前端色板容量）
-const CONV_MAX_MSGS = 300;
-const CONV_MAX_TEXT = 20000;                         // 单条消息上限，别让一个文件无限长
-const CONV_ROLES = new Set(['user', 'agent', 'think', 'tool', 'mood', 'info']);
+// 目录与上限那几个常量在**文件头**（ROOT 旁边）—— 启动自检要扫存档，所以必须定义在
+// 自检之前，原因见那里。这一节只放读写函数。
 
 function convPath(id) { return path.join(CONV_DIR, id + '.json'); }
 
@@ -991,8 +1194,10 @@ function listConvs() {
     try {
       const j = JSON.parse(fs.readFileSync(convPath(id), 'utf8'));
       const msgs = Array.isArray(j.msgs) ? j.msgs : [];
-      // 只有一句欢迎语的空对话不入列（用户从没说过话就不该占一个标签）
-      if (!hasUser(msgs)) continue;
+      // **落盘即入列**：写档那一步（writeConv）已经把"不值得留的"挡在外面了 ——
+      // 能躺在 run/conversations 里的，要么有用户消息、要么配过 LLM、要么是客户端
+      // 明确说了要留的标签（keep，见 writeConv）。这里再挑一遍会让"标签数在重启后对不上"：
+      // 用户开的那个空标签被写到盘里了，却在列表里被过滤掉 → 一开 HUD 就少一个（2026-10-14 报的）。
       out.push({ id, title: String(j.title || ''), updatedAt: Number(j.updatedAt) || 0, count: msgs.length });
     } catch (e) { /* 坏文件跳过，不要因此让整个列表接口挂掉 */ }
   }
@@ -1004,17 +1209,63 @@ function readConv(id) {
   if (!CONV_ID_RE.test(String(id || ''))) return null;
   try {
     const j = JSON.parse(fs.readFileSync(convPath(id), 'utf8'));
-    return { id, title: String(j.title || ''), updatedAt: Number(j.updatedAt) || 0, msgs: cleanMsgs(j.msgs) };
+    return {
+      id, title: String(j.title || ''), updatedAt: Number(j.updatedAt) || 0,
+      msgs: cleanMsgs(j.msgs),
+      llm: llmOf(j.llm),                  // 洗过一遍再给出去：没配 / 存的是坏值 → null
+      // 形象也一样洗一遍：'auto' 或干净的包 id（旧存档没这个字段 → 'auto'）
+      charpack: normArtOf(j.charpack),
+      charpackPicked: ART_ID_RE.test(String(j.charpackPicked || '').trim()) ? String(j.charpackPicked).trim() : '',
+      // 标签色号（色板下标）。存档里没有 / 越界 / 不是整数 → null，由前端自己派一个。
+      // 这跟"形象"不一样：形象是**内容**（谁在跟谁说话），色号只是**认标签的记号** ——
+      // 但用户就是靠它认"那个蓝的是我刚才问问题那个"，所以也得跨重启记住（2026-10-15 报的）。
+      ci: normCi(j.ci),
+      // 性格（见 moodprotocol.js 的 PERSONAS）：白名单外的脏值回落 default
+      persona: moodp.normPersona(j.persona),
+      // 这个对话自己的心情快照（没有 / 脏了 → null，前端就当"从头开始"）
+      mood: moodp.normMoodSnap(j.mood),
+    };
   } catch (e) { return null; }
 }
 
-function writeConv(id, title, msgs) {
+/** 标签色号：非负整数且在色板内才认（色板长度前端定，这里只挡脏值/越界） */
+function normCi(v) {
+  const n = Number(v);
+  return (Number.isInteger(n) && n >= 0 && n < CONV_MAX) ? n : null;
+}
+
+function writeConv(id, title, msgs, llm, keep, charpack, charpackPicked, ci, persona, mood) {
   if (!CONV_ID_RE.test(String(id || ''))) return false;
   const clean = cleanMsgs(msgs);
-  if (!hasUser(clean)) return false;                  // 没说过话的对话不落盘
+  const cfg = llmOf(llm);
+  // 没说过话的对话本来不落盘 —— 但有两种必须落：
+  //   ① 配过 LLM 的（llm 有值）：那份地址与 Key 只存在这个对话里，
+  //      不写盘的话"新建对话 → 填好配置 → 还没说话就关掉 HUD"等于让人白填一遍。
+  //   ② 客户端明确说要留的（keep）：标签栏里**真实存在**的标签。用户新建了一个对话、
+  //      或启动时那个还没配好的标签 —— 关掉 HUD 再开，标签数得跟关之前一样，
+  //      不能因为"它还没内容"就悄悄少一个（2026-10-14 用户报的）。
+  // 形象（charpack）跟着对话存，但**它自己不构成落盘理由**：一个空对话选了什么形象
+  // 不值得为它留个档（那种对话本来就会因为 keep 留下来）。
+  if (!hasUser(clean) && !cfg && !keep) return false;
+  const art = normArtOf(charpack);
+  const picked = ART_ID_RE.test(String(charpackPicked || '').trim()) ? String(charpackPicked).trim() : '';
+  const color = normCi(ci);            // 标签色号：脏值/越界就当没给（前端会自己派一个）
+  const per = moodp.normPersona(persona);   // 性格：脏值回落 default（同上，不猜）
+  const moodSnap = moodp.normMoodSnap(mood);   // 心情：脏值整条丢掉（同上，不猜）
   try {
     fs.mkdirSync(CONV_DIR, { recursive: true });
-    const data = { id, title: String(title || '').slice(0, 120), updatedAt: Date.now(), msgs: clean };
+    const data = {
+      id, title: String(title || '').slice(0, 120), updatedAt: Date.now(), msgs: clean,
+      ...(cfg ? { llm: cfg } : {}),     // 没配就不写这个字段 —— 旧存档的结构原样保持
+      // 同上：'auto' 且没挑到东西就不写，别让每个老对话都被塞两个字段
+      ...((art !== 'auto' || picked) ? { charpack: art, ...(picked ? { charpackPicked: picked } : {}) } : {}),
+      ...(color === null ? {} : { ci: color }),
+      // 同上：'default' 的语义是"没设置"，不写这个字段（别把每个老对话都塞一个 persona）
+      ...(per === 'default' ? {} : { persona: per }),
+      // 心情：**每个对话一份**（2026-10-17 起）。洗完再存 —— 前端是唯一的写入方，
+      // 但存档文件用户能直接改，脏值不能直接喂回 restore（见 normMoodSnap）。
+      ...(moodSnap ? { mood: moodSnap } : {}),
+    };
     fs.writeFileSync(convPath(id), JSON.stringify(data));
     return true;
   } catch (e) { return false; }
@@ -1025,7 +1276,78 @@ function dropConv(id) {
   try { fs.unlinkSync(convPath(id)); return true; } catch (e) { return false; }
 }
 
+// ─────────────────────────────── 界面状态落盘（心情快照）
+//
+// 只做一件事：把前端"这一刻长什么样"存下来，下次开 HUD 原样还给它。
+// 校验按"宁缺毋滥"：state 必须是那个封闭枚举，不合法**整条丢掉**（宁可回到待机，
+// 也不要让界面停在一个不存在的状态上）；其余字段一律截断到有界长度，别让一个坏文件
+// 把几百 KB 塞进渲染进程。
+const UI_MAX_NOTE = 200;
+function normUiMood(m) {
+  if (!m || typeof m !== 'object') return null;
+  const state = String(m.state || '').trim().toLowerCase();
+  if (!UI_MOOD_STATES.has(state)) return null;
+  const face = String(m.face == null ? '' : m.face).trim().slice(0, 40);
+  const noteText = String(m.noteText || '').slice(0, UI_MAX_NOTE);
+  const nkRaw = String(m.noteKey || '');
+  const noteKey = /^[A-Za-z0-9._]{0,60}$/.test(nkRaw) ? nkRaw : '';
+  const source = UI_MOOD_SOURCES.has(m.source) ? m.source : 'auto';
+  const num = (v) => (typeof v === 'number' && isFinite(v) ? v : null);
+  const iRaw = num(m.intensity);
+  const vRaw = num(m.value);
+  return {
+    state,
+    face: face || null,
+    // note 是**内容**（agent 自己那句话），原样留着；空串表示它没说过
+    noteText,
+    noteKey,
+    source,
+    intensity: iRaw === null ? 0.45 : Math.max(0, Math.min(1, iRaw)),
+    value: vRaw === null ? null : Math.round(Math.max(2, Math.min(100, vRaw)) * 100) / 100,
+    savedAt: Number(m.savedAt) || Date.now(),   // 墙上时间：只是给"上次什么时候存的"留个底
+  };
+}
+
+/**
+ * 落在哪个对话上：只认"长得像对话 id"的（同一个 CONV_ID_RE），其余一律当没存。
+ * 空串 = 没存过（新装机 / 老版本写的文件），前端就按自己的默认（最近更新的那个）落。
+ */
+function normUiActive(v) {
+  const s = String(v == null ? '' : v).trim();
+  return CONV_ID_RE.test(s) ? s : '';
+}
+
+/** 读回到 { mood: {...}|null, active: 'cxxx'|'' } —— 文件不存在 / 坏了都当成"没有"，不报错 */
+function readUiState() {
+  try {
+    const j = JSON.parse(fs.readFileSync(UI_PATH, 'utf8'));
+    return { mood: normUiMood(j && j.mood), active: normUiActive(j && j.active) };
+  } catch (e) { return { mood: null, active: '' }; }
+}
+
+/**
+ * 写。语义跟 writeConv 的"没配就不写"不同：这里是**逐字段显式设置** ——
+ * body 里带了哪个字段就以它为准（哪怕是 null / 空串，那是"清掉"），
+ * 没带的字段**保留原来那份**（心情和 active 分别从两个地方写，谁都不许把对方抹掉）。
+ */
+function writeUiState(body) {
+  const has = (k) => !!body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, k);
+  const prev = readUiState();
+  const mood = has('mood') ? normUiMood(body.mood) : prev.mood;
+  const active = has('active') ? normUiActive(body.active) : prev.active;
+  try {
+    fs.mkdirSync(UI_DIR, { recursive: true });
+    fs.writeFileSync(UI_PATH, JSON.stringify({ v: 1, mood, active }));
+    return true;
+  } catch (e) { return false; }
+}
+
 // ─────────────────────────────── 素材包
+// 注意：用**函数声明**而不是模块级 const —— 启动时的 assetStat() 在文件靠上的位置就调用
+// listCharpacks()，那时靠后的 const 还在 TDZ 里，抛错会被下面的 catch 吞掉，
+// 于是一个包都扫不到（启动画面如实报"没找到素材包"）。函数声明会提升，没这个问题。
+function isArtFile(f) { return /\.(png|jpe?g|webp)$/i.test(f); }
+
 function listCharpacks() {
   const out = [];
   if (!fs.existsSync(CHARS)) return out;
@@ -1036,10 +1358,62 @@ function listCharpacks() {
     if (!fs.existsSync(packPath)) continue;
     try {
       const pack = JSON.parse(fs.readFileSync(packPath, 'utf8'));
-      out.push({ id: d, ...pack, base: `/characters/${d}/frames/` });
+      const entry = { id: d, ...pack, base: `/characters/${d}/frames/` };
+      // 高清立绘：src/ 下的图，文件名（去掉 _0/_1 帧号）就是标签。
+      // 前端拿到 artBase + art 就直接 drawImage，绕开字符网格 —— 同标签多帧只取第一张。
+      const srcDir = path.join(dir, 'src');
+      if (fs.existsSync(srcDir)) {
+        const art = {};
+        for (const f of fs.readdirSync(srcDir)) {
+          if (!isArtFile(f)) continue;
+          const lab = f.replace(/_\d+$/, '').replace(/\.[^.]+$/, '');
+          if (!(lab in art)) art[lab] = f;
+        }
+        if (Object.keys(art).length) {
+          entry.art = art;
+          entry.artBase = `/characters/${d}/src/`;
+        }
+      }
+      out.push(entry);
     } catch (e) { /* 坏包跳过 */ }
   }
   return out;
+}
+
+// ─────────────────────────────── Tab 补全用的命令表
+//
+// 补全一个词要先知道"这个 shell 认识哪些命令"。PowerShell 的别名 / 函数 / cmdlet 拿不到
+// （那得问 pwsh 自己，见 complete.js 开头为什么不用 TabExpansion2），但**可执行文件**能扫：
+// 把 PATH 里每个目录列一遍，留下 .exe/.cmd/.bat/.com/.ps1 的主干名去重就是。
+//
+// 扫一遍要读二十来个目录（System32 一个就几千个文件），本机实测 ~25ms（23 个目录 / 1300 个
+// 可执行文件）。虽然不算贵，但也不能放在用户按 Tab 那一瞬间做，所以开机后预热一次，
+// 之后 5 分钟内直接用缓存。
+const EXE_EXT = new Set(['.exe', '.cmd', '.bat', '.com', '.ps1']);
+let _cmdAt = 0;
+let _cmdNames = [];
+function commandNames(force) {
+  if (!force && _cmdNames.length && Date.now() - _cmdAt < 300000) return _cmdNames;
+  const names = [];
+  const seen = new Set();
+  const dirs = String(process.env.PATH || '').split(path.delimiter).filter(Boolean);
+  for (const d of dirs) {
+    let ents = [];
+    try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (e) { continue; }
+    for (const e of ents) {
+      if (!e.isFile()) continue;
+      const ext = path.extname(e.name).toLowerCase();
+      if (!EXE_EXT.has(ext)) continue;
+      const base = e.name.slice(0, e.name.length - ext.length);
+      const k = base.toLowerCase();
+      if (!k || seen.has(k)) continue;
+      seen.add(k); names.push(base);
+    }
+  }
+  names.sort((a, b) => a.localeCompare(b));
+  _cmdAt = Date.now();
+  _cmdNames = names;
+  return names;
 }
 
 // ─────────────────────────────── 路由
@@ -1059,16 +1433,36 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/sessions') {
       return sendJson(res, { sessions: listSess(), pty: listPtySessions(), max: MAX_SESSIONS });
     }
-    // LLM 接入配置：GET 拿当前（不回传明文 key），POST 保存（写 llm-config.json）
-    if (p === '/api/llm/config' && req.method === 'GET') return sendJson(res, publicLlmCfg());
-    if (p === '/api/llm/config' && req.method === 'POST') {
-      const body = JSON.parse((await readBody(req)) || '{}');
-      return sendJson(res, saveLlmCfg(body));
+    // Tab 补全：把"这一行 + 光标位置"发过来，回候选 + 这个词在行里的范围。
+    // cwd 取**后端会话里那份**（前端那份是跟着 cd 回来的镜像，可能还没同步）。
+    // 取不到会话也不报错：按 USERPROFILE 补，至少比什么都不补强。
+    if (p === '/api/complete') {
+      const s = getSess(u.searchParams.get('s'), false);
+      const line = u.searchParams.get('line') || '';
+      const raw = Number(u.searchParams.get('caret'));
+      return sendJson(res, complete.completeLine({
+        line,
+        caret: Number.isFinite(raw) ? raw : line.length,
+        cwd: (s && s.cwd) || process.env.USERPROFILE || 'C:\\',
+        kind: (s && s.kind) || 'pwsh',
+        commands: commandNames(),
+        home: process.env.USERPROFILE || '',
+      }));
     }
-    // LLM 连通性验证：真的打一次远端接口，前端据此决定要不要落盘
+    // （原来的 /api/llm/config 已经删掉：那份全局配置不再存在，见文件头那一节。
+    //  现在配置随对话走，由 /api/conv 一起存、随 /api/agent 一起带上。）
+    // LLM 连通性验证：真的打一次远端接口（**纯探测，不写任何文件**），前端据此决定存不存
     if (p === '/api/llm/test' && req.method === 'POST') {
       const body = JSON.parse((await readBody(req)) || '{}');
       return sendJson(res, await testLlm(body));
+    }
+    // 「自动」形象：让这个对话配好的模型从候选里自己挑一个（**纯调用，不写任何文件**，
+    // 挑出来的结果由前端存进那个对话）。报错按上面那条规矩：只给原文，措辞交给语言包。
+    if (p === '/api/llm/pick-art' && req.method === 'POST') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      const cfg = llmOf(body);
+      if (!cfg) return sendJson(res, { ok: false, error: '缺少 API 地址或 Key' });
+      return sendJson(res, await pickArt(cfg, body.packs));
     }
     if (p === '/api/charpacks') return sendJson(res, listCharpacks());
     // 启动记录：前端启动画面取回去回放（每行都是真事，见 server/bootlog.js）
@@ -1124,7 +1518,10 @@ const server = http.createServer(async (req, res) => {
 
     if (p === '/api/agent' && req.method === 'POST') {
       const body = JSON.parse((await readBody(req)) || '{}');
-      return await streamAgent(res, body.text || '', body.history || []);
+      // body.llm = **这个对话自己的** API 配置（每个对话一份，见文件头那一节）。
+      // 没带 / 带得不完整 → llmOf() 返回 null → 走演示用的假 agent，不报错。
+      // body.persona / body.mood = 性格 + "此刻心情"（都要挡脏值，见 agentMoodOpts）。
+      return await streamAgent(res, body.text || '', body.history || [], body.llm, agentMoodOpts(body));
     }
 
     // 对话存档（AGENT 多标签）。落在 run/conversations/ —— 该目录不入库，不会被推到 GitHub。
@@ -1135,11 +1532,20 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/conv' && req.method === 'POST') {
       const b = JSON.parse((await readBody(req)) || '{}');
-      return sendJson(res, { ok: writeConv(b.id, b.title, b.msgs) });
+      return sendJson(res, {
+        ok: writeConv(b.id, b.title, b.msgs, b.llm, b.keep, b.charpack, b.charpackPicked, b.ci, b.persona, b.mood),
+      });
     }
     if (p === '/api/conv/delete' && req.method === 'POST') {
       const b = JSON.parse((await readBody(req)) || '{}');
       return sendJson(res, { ok: dropConv(b.id) });
+    }
+
+    // 界面状态（重启后画面跟关掉时一样）：目前就是心情快照。见 UI_PATH 那段注释。
+    if (p === '/api/ui-state' && req.method === 'GET') return sendJson(res, readUiState());
+    if (p === '/api/ui-state' && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req)) || '{}');
+      return sendJson(res, { ok: writeUiState(b) });
     }
 
     // ── PTY：真终端会话（每个标签一份；session 省略即默认会话 '0'）
@@ -1221,6 +1627,8 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`Ponko-HUD backend  http://127.0.0.1:${PORT}/`);
   bootlog.emit('node', 'boot.node.listen', { port: PORT, ms: bootlog.settle() });
   setImmediate(probePython);              // 端口先开，再慢慢探解释器（见上面注释）
+  // 预热 Tab 补全的命令表：扫 PATH 要读二十来个目录，不能等用户按下 Tab 那一刻才做
+  setTimeout(() => { try { commandNames(); } catch (e) { /* 扫不动就算了，补全只是少一半候选 */ } }, 3000);
   // 预热：外部地理查询要几秒，别让首次点开地球时干等。顺带把真实结果记进启动日志
   netgeo.netgeo().then((g) => {
     const s = g && g.self;

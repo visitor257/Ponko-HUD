@@ -18,8 +18,15 @@
 //
 //   3) **只翻"现在屏幕上是中文"的那些字**。本来就是英文的（面板名 SHELL / AGENT、
 //      键位提示 [TAB]、单位 GB/ms、IP 与城市名…）**写死英文不进字典** —— 进字典只会招来
-//      半吊子译文，而且中文下看着还不如原文。日语包（ja.js）照这条留空：一条都不翻，
-//      于是 ja 下 = boot.* 落 en + ui.* 落 en = **整屏英文**（不是半屏中文）。
+//      半吊子译文，而且中文下看着还不如原文。
+//      四份包的策略各不相同，但都符合这条：
+//        zh-cn  全量（原文）· en 全量（兜底）
+//        ja     只翻 ui.*，boot.* 故意留空 → 启动日志落英文（用户 2026-10-13：日语日志不翻）
+//        ru     全量（ui.* + boot.*，含宿主/后端写的那几十行）—— 用户 2026-10-17：「包括开屏日志」
+//        tlh    全量，而且正文是**克林贡文 pIqaD 字形**（U+F8D0 私用区），不是罗马化 ——
+//               用户 2026-10-17：「我要的是克林贡文，不是罗马拼音」。这一段私用区系统字体
+//               一个字形都没有，所以字体是自带的（style.css 的 @font-face + grid.js 字体栈），
+//               改文案用 tools/piqad.mjs 转进转出。**别把它当普通语言包改**。
 //
 //   4) **启动日志存的是"事件 id + 参数"，不是成品句子**。宿主/后端在页面拿到语言包
 //      之前就把行写进 run/boot.log 了，只有存 id 才能让页面用当前语言重新渲染。
@@ -28,11 +35,13 @@
 import zhCn from './zh-cn.js';
 import en from './en.js';
 import ja from './ja.js';
+import ru from './ru.js';
+import tlh from './tlh.js';
 
-export const LANGS = { 'zh-cn': zhCn, en, ja };
+export const LANGS = { 'zh-cn': zhCn, en, ja, ru, tlh };
 // 语言名用**它自己的语言**写（选语言的界面里这是通行做法，也不受当前语言影响）。
 // 只登记"有包"的语言 —— 这一份和 LANGS 的键一一对应，测试会盯着它别漂。
-const NAMES = { 'zh-cn': '简体中文', en: 'English', ja: '日本語' };
+const NAMES = { 'zh-cn': '简体中文', en: 'English', ja: '日本語', ru: 'Русский', tlh: ' ' };
 const BASE = { ui: en, boot: en };            // 命名空间 → 兜底语言（缺就用英文）
 const PREF_KEY = 'ponko.lang';
 const DEFAULT_LANG = 'zh-cn';

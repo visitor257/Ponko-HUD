@@ -1,19 +1,26 @@
 # -*- coding: utf-8 -*-
 # Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
-"""生成 DS娘 测试立绘（5 种表情），用于验证 charpack 素材管线。
+"""生成 5 张测试立绘，用来验证 charpack 素材管线（产物不参与 HUD 运行）。
+
+⚠ 输出到**系统临时目录**（`%TEMP%/ponko-test-assets/src/`），不落进仓库 ——
+   早先这一份放在 `characters/_archive/ds-whale/`，那个占位角色已经删了。
+要真的让 HUD 用上：把这几个 png 放进 `characters/<你的包名>/src/`，
+再跑 `tools/charpack.py` 生成 `frames/`（参数见该脚本头部）。
+
+用法：python make_test_assets.py [输出目录]
 
 素材规范（用户自制素材需满足）：
   - PNG，RGBA，透明背景
   - 建议 512x640 以上，纯色扁平上色风格转色块效果最好
   - 一张图 = 一个表情标签；同名加序号 = 该标签的逐帧动画（idle_0.png / idle_1.png）
-
-用法：python make_test_assets.py
 """
 import os
+import sys
+import tempfile
 from PIL import Image, ImageDraw, ImageFilter
 
 W, H = 480, 640
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "characters", "ds-whale", "src")
+OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(tempfile.gettempdir(), "ponko-test-assets", "src")
 
 HAIR_A, HAIR_B = (42, 92, 200), (126, 170, 255)
 HAIR_DARK = (28, 62, 150)

@@ -1,6 +1,11 @@
 // Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // AGENT：对话流（thinking 块 / tool_call 卡 / 流式回复）+ 底部状态条
-//        未接入 LLM 时，面板正中弹配置框（API 地址 / Key / 模型 + 保存）
+//        某个对话没配 LLM 时，面板正中弹配置框（API 地址 / Key / 模型 + 保存）
+//
+// **LLM 配置是每个对话一份的**（2026-10-14 改）：以前整块面板共用一份全局配置，
+// 想换个模型就得改全局、改完所有对话跟着变。现在配置存在对话自己的存档里，
+// 点「+」新建时拿**按 + 那一刻正看着的那个对话**那份预填（那个没配过就留空，见 _llmOfTab）
+// —— 想换模型就新开一个对话改，老对话不受影响。
 //
 // 多标签（对齐 SHELL 的终端标签）：AgentConv = 一个对话的全部状态，AgentPanel = 标签栏 +
 // 当前对话。标签栏上认颜色不认编号，名字取该对话的第一条用户消息。
@@ -11,9 +16,10 @@
 import { ATTR, mix } from '../grid.js';
 import { TAB_COLORS } from '../tabcolors.js';
 import { t } from '../i18n/index.js';
+import { Mood } from '../mood.js';        // 每个对话自己持有的一份心情（见 AgentConv 构造函数）
 import {
-  askAgent, getLlmConfig, saveLlmConfig, testLlmConfig,
-  listConvs, getConv, saveConv, deleteConv,
+  askAgent, testLlmConfig, pickArt,
+  listConvs, getConv, saveConv, deleteConv, saveUiState,
 } from '../api.js';
 
 // 作为上下文回灌给 LLM 的近期消息条数（约等于一半轮数的对话）
@@ -23,6 +29,19 @@ const SAVE_DEBOUNCE = 800;             // 落盘防抖：流式期间每条事�
 const TITLE_MAX = 12;                  // 标签栏标题最多占几列
 const HDR_GAP = 2;                     // 框顶线右端：色标与右上角状态字之间空几列（贴着会看成一坨）
 const HDR_MIN = 6;                     // 状态字再挤也至少给这么多列（否则截得没法认）
+
+// 性格候选项（id + 语言包 key）。
+// ⚠️ **必须和 server/moodprotocol.js 的 PERSONA_KEYS 一一对应** —— 前端跑在浏览器里、
+// 后端是 CommonJS，没法共用一份常量表，所以两边各存一份，由
+// tools/test_mood_strip.mjs 的一致性守卫盯着，不许单边加人。
+const PERSONA_OPTS = [
+  ['default', 'ui.agent.opt.personaDefault'],
+  ['tsundere', 'ui.agent.opt.personaTsundere'],
+  ['genki', 'ui.agent.opt.personaGenki'],
+  ['sarcastic', 'ui.agent.opt.personaSarcastic'],
+  ['gentle', 'ui.agent.opt.personaGentle'],
+];
+const PERSONA_KEYS = PERSONA_OPTS.map((o) => o[0]);
 
 /**
  * 按**显示宽度**截到 max 列（中文算 2 列），放不下就砍掉尾巴换成 '…'。
@@ -44,8 +63,14 @@ function clipCols(g, s, max) {
 
 // ── 一个对话：所有状态都在实例上，对话之间互不共享 ──────────────────────
 export class AgentConv {
-  constructor(mood, id, ci) {
-    this.mood = mood;
+  constructor(id, ci, savedMood) {
+    // 心情是**这个对话自己的**（2026-10-17 改）。以前整个面板共用一个 Mood 实例，
+    // 于是：① 按 + 建的新对话会继承上一段对话的火气（用户报的原话）；
+    // ② 后台对话还在流式输出时，它的 [[mood:...]] 会直接改**前台**的脸色；
+    // ③ 新对话的模型在 system 提示词里收到的是别的对话的心里话。
+    // 形象 / 性格 / LLM 配置早就每对话一份，心情跟着走才是一致的。
+    this.mood = new Mood();
+    if (savedMood) this.mood.restore(savedMood);   // 存档带回来的那份（脏值 restore 自己会拒）
     this.id = id;              // 存档 id（也是 run/conversations/<id>.json 的文件名）
     this.ci = ci;              // 色标下标 —— 这个对话的"身份色"，替代数字编号
     this.msgs = [];            // {role:'user'|'agent'|'think'|'tool'|'mood', text, result?}
@@ -58,20 +83,50 @@ export class AgentConv {
     this.rect = null;
     this._cancel = null;
     this._title = '';          // 存档里带回来的标题（空 = 按第一条用户消息现取）
-    this.showMoodTags = false; // 面板同步过来的本地偏好（显示/隐藏 [[mood:...]] 原文）
+    // 这个对话**自己的** LLM 配置（null = 还没配）。每个对话一份，见文件头那一节：
+    // 换对话就等于换配置，不用改全局，也不会互相覆盖。
+    this.llm = null;
+    // 这个对话的**形象**（角色素材包）：'auto' = 让配好的模型自己挑，否则是包 id。
+    // 也是**每个对话一份** —— 右侧立绘跟着当前对话走，切标签就换人。
+    // charpackWanted 是用户选的那个值，charpackPicked 是"自动"时模型挑出来的结果
+    // （分开存是因为用户想重挑时把 wanted 留着，也能看出模型当时选了什么）。
+    this.charpack = 'auto';
+    this.charpackPicked = '';
+    // 这个对话的**性格**（2026-10-15 加）：也是**每个对话一份**的，跟形象同一层。
+    // 它喂进 system 提示词里那段人设 —— 同一套心情机制，换个性格就是另一个人
+    // （用户："要让 llm 的情绪更拟人……要像具有情感那样"，并选择"配置时设置"）。
+    this.persona = 'default';
+    // 摊开着的**配置表单**（null = 这个对话没在配）。跟着对话走而不是跟着面板走：
+    // 切走只是看不见，填到一半的内容不会丢、也不会被当成别的对话的配置。
+    this.cfg = null;
+    // 这个标签是"用户真实开着的对话"（点「+」建的、或启动时留下的那个空标签）→
+    // 落盘时带上 keep，让后端即使"没说过话也没配过"也把它存下来。
+    // 不这样做的话，关掉 HUD 再开标签数会悄悄少（2026-10-14 用户报的）。
+    this.keepOpen = false;
     this.onDirty = null;       // 内容变了 → 面板排一次落盘
     this.onToken = null;       // 吐字节拍（面板统计 tok/s）
   }
 
+  /** 这个对话接没接真 LLM —— 由"自己有没有配置"直接派生，不需要面板往回同步 */
+  get llmOk() { return !!this.llm; }
+
   /** 本对话的颜色（标签栏色标、面板顶线小方块都用它认标签） */
   color() { return TAB_COLORS[this.ci % TAB_COLORS.length]; }
 
-  /** 标签栏上的名字：存档标题 → 第一条用户消息 → 「新对话」（空对话时那个占位名走语言包） */
-  title() {
+  /**
+   * 真正要写进存档的标题（**没有就返回空串**）。
+   * 不要拿 title() 去存 —— 那个在没名字时会返回 `t('ui.agent.newConv')`，
+   * 于是"新对话"这种**界面文案**会被写进存档；用户切到日语以后，
+   * 那个老标签还叫中文的「新对话」（存档里存的是成品句子，没法重译）。
+   */
+  saveTitle() {
     if (this._title) return clampTitle(this._title);
     const first = this.msgs.find((m) => m.role === 'user' && m.text.trim());
-    return first ? clampTitle(first.text) : t('ui.agent.newConv');
+    return first ? clampTitle(first.text) : '';
   }
+
+  /** 标签栏上的名字：存档标题 → 第一条用户消息 → 「新对话」（空对话时那个占位名走语言包） */
+  title() { return this.saveTitle() || t('ui.agent.newConv'); }
 
   /** 关标签时调用：中止在飞的请求，别再往上写 */
   dispose() {
@@ -168,12 +223,12 @@ export class AgentConv {
     for (const m of this.msgs) if (m.k) m.text = t(m.k, m.a);
   }
 
-  /** 把 agent 的心情控制语句记进对话流（开关关掉就不记，协议本身照常生效） */
-  noteMood(e) {
-    if (!this.showMoodTags) return false;
-    if (!e || !e.raw) return false;              // 没有原文（本地兜底心情）就没什么可显示的
-    this.push('mood', e.raw);
-    return true;
+  /**
+   * 这个对话现在该用哪个形象包：用户直接选了就用那个，选「自动」就用模型挑的。
+   * 都没定（自动但还没挑 / 挑的那个包被删了）→ 返回 ''，由主装配回退到默认包。
+   */
+  artId() {
+    return this.charpack === 'auto' ? (this.charpackPicked || '') : (this.charpack || '');
   }
 
   send(text) {
@@ -183,7 +238,6 @@ export class AgentConv {
     this.push('user', t);
     this.busy = true;
     this.tokens = 0;
-    if (this.mood && this.mood.touch) this.mood.touch();   // 用户活动只记时间戳，情绪不该由界面推断
     // 近期对话作为上下文发给真 LLM（剥掉 [[mood:...]] 标记，别把情绪回灌给模型）。
     // 两个必须小心的地方：
     //   ① 后端会自己把本次提问追加到 messages 末尾，所以这里要排除刚 push 的那条，
@@ -196,14 +250,16 @@ export class AgentConv {
       .slice(-MAX_CTX_MSGS)
       .map((m) => ({ role: m.role, content: stripMood(m.text).trim() }))
       .filter((m) => m.content);
+    // ③ 还要把"我此刻的心情"一起带过去。模型的 mood 标记只往界面走（上面 stripMood
+    //    剥掉的就是它），不给这份快照，它每轮都从白纸开始按表推情绪 —— 表现就是机械、
+    //    每轮重置（用户 2026-10-15："不像人"）。接住它的地方见 server 的 moodBriefing()。
     this._cancel = askAgent(t, (e) => {
       switch (e.t) {
         case 'mood':
-          // 心情是 agent 的声明直接落地：state 决定配色，face 决定角色立绘
-          if (this.mood && this.mood.fromAgent && !this.mood.fromAgent(e)) break;
-          // 控制语句本身也显示出来（后端随心情事件带回 raw = 标记原文）：
-          // 用户要看见 agent 到底给自己下了什么指令，而不是只看见被剥干净的正文。
-          this.noteMood(e);
+          // 心情是 agent 的声明直接落地：state 决定配色，face 决定角色立绘。
+          // 控制语句本身**不进对话流** —— 它是给 mood 的指令，不是给用户看的内容
+          // （2026-10-15 用户：那个"显示/隐藏"开关本来就是给开发时看一眼用的，删掉）。
+          if (this.mood && this.mood.fromAgent) this.mood.fromAgent(e);
           break;
         case 'thinking':
           this.push('think', e.text);
@@ -245,7 +301,33 @@ export class AgentConv {
       // 流式期间 token 是直接追加到上一条上的（不经过 push），所以这里统一再报一次"内容变了"，
       // 否则回复写完就再没人触发落盘，重启后只剩提问没有回答。
       if (this.onDirty) this.onDirty(this);
-    }, () => { this.busy = false; if (this.onDirty) this.onDirty(this); }, history);
+      // llm = **这个对话自己的**配置。不传的话后端无从判断这个对话接的哪家，
+    // 只能退回演示用的假 agent —— 那正是"明明配过却还在演示"的老毛病。
+    }, () => { this.busy = false; if (this.onDirty) this.onDirty(this); }, history, this.llm,
+    { persona: this.persona, mood: this._moodBrief() });
+  }
+
+  /**
+   * 发给后端的"此刻心情"快照 —— 让模型接住自己的情绪（情绪记忆，见 server 的 moodBriefing）。
+   * 只带三样：state、它自己写过的心里话、这份心情保持了多久。
+   *
+   * note 只取 **agent 自己写的**那句（noteText）：noteKey 那种是本地兜底 / 界面文案，
+   * 拿它去当"你心里想的是…"等于凭空给模型塞一句它根本没说过的话。
+   *
+   * ⚠ 2026-10-17 起 **source 不是 agent 的一律不发**（新对话的初始待机、调试旁路、
+   *   本地兜底）。理由：这段提示词写的是"你给自己定的是…"，只有 agent 真声明过才成立。
+   *   以前会把"本地兜底进的瞌睡"当成它的心情发过去，模型于是回一句"我本来还困着" ——
+   *   看着像它自己设的，其实是程序塞给它的（用户当天问的"它会自动变成无聊"就是这个）。
+   */
+  _moodBrief() {
+    const m = this.mood;
+    if (!m || !m.state || m.source !== 'agent') return null;
+    const held = Number(m.lastAgent) > 0 ? (performance.now() - m.lastAgent) / 60000 : 0;
+    return {
+      state: m.state,
+      note: String(m.noteText || '').slice(0, 40),
+      minutes: Math.max(0, Math.round(held * 10) / 10),
+    };
   }
 
   abort() {
@@ -270,15 +352,14 @@ export class AgentConv {
     // 展开成可显示行
     const lines = [];
     for (const m of this.msgs) {
-      // 心情语句隐藏时是**整行不生成**（对已经攒下来的历史行同样生效）——
+      // 心情控制语句不进对话流（它是给 mood 的指令，协议本身照常生效）。
+      // 旧存档里可能还留着 role='mood' 的行，读回来一律**整行不生成** ——
       // 只在绘制时把文字换成空白的话，对话里会留下一条莫名其妙的空行。
-      if (m.role === 'mood' && !this.showMoodTags) continue;
+      if (m.role === 'mood') continue;
       const pre = m.role === 'user' ? '› '
-        : m.role === 'mood' ? '♥ '
         : m.role === 'think' ? '◐ '
         : m.role === 'tool' ? '⚙ ' : '▌ ';
       const col = m.role === 'user' ? T.accent
-        : m.role === 'mood' ? T.warn
         : m.role === 'think' ? T.dim : m.role === 'tool' ? T.warn : T.text;
       // 正文里的 '\n' 必须切成硬行：直接喂给 wrapText 的话换行符会被当成 1 列宽的普通字符
       // 画进网格（用户发 "1\n2" 就显示成 "1  2"，换行丢了只剩一格空白）。
@@ -345,8 +426,10 @@ export class AgentConv {
 
 // ── 面板：标签栏 + 当前对话（对外 API 与单对话时代完全一致，主装配不用改）──
 export class AgentPanel {
-  constructor(mood) {
-    this.mood = mood;
+  // 注意：**不接 mood 参数**（2026-10-17 起）。心情挂在每个对话身上（AgentConv.mood），
+  // 面板只负责回答"现在该显示哪一份"—— activeMood()。屏幕那层视图由 main.js 用
+  // moodView() 造，主装配照旧把一个 `mood` 对象交给 SHELL / CHAR 面板即可。
+  constructor() {
     this.rect = null;
     this.tabs = [];
     this.active = 0;
@@ -357,17 +440,33 @@ export class AgentPanel {
     this._colorSeq = 0;
     this._dirty = new Set();     // 待落盘的对话
     this._saveTimer = null;
-    this.llmConfigured = false;  // 后端是否配好了真 LLM
-    this.llmModel = '';          // 接的是哪个模型（框顶右上角显示它，不写死一个 "llm"）
-    this.inConfig = false;       // 是否正在显示配置框（面板级：LLM 配置跟哪个对话无关）
-    this._cfg = null;
-    this._cfgIdx = null;
+    // "存档恢复完了没有"。恢复完之前**一律不许往 ui-state 写 active** ——
+    // 构造函数里那个起手对话会在恢复前先建出来，那一笔要是写了，就会把盘上"上次落在哪个
+    // 对话"盖成一个**还没读档、注定要被丢弃**的新 id，于是重开永远落回默认（2026-10-17 踩过）。
+    this._restored = false;
+    this._cfgHits = null;        // 配置框的鼠标命中缓存（drawConfig 每帧重建）
     this._clearHidden = null;    // main.js 注入：关闭配置框时清空隐藏输入框
     this.onConvClosed = null;    // main.js 注入：/del chat 关掉/换掉对话之后，主装配要跟着收拾
     this.onDelAsk = null;        // main.js 注入：/del chat 命中时先弹那道红条确认（不直接删）
-    // 字段名 / 候选项名都存**语言包 key**（`labelKey` / opts 第二项），绘制时现取现翻 ——
-    // 存成品文案的话，配置框开着的时候切语言它不会跟着变。labelKey 只给显示用，值本身是数据。
-    this.form = {
+    // main.js 注入：① 问当前有哪些形象包（配置框的候选项）② 形象变了就换立绘
+    this.getPacks = null;
+    this.onArtChange = null;
+    this.newTab();
+    this.tab.pushT('agent', 'ui.agent.ready');
+    // 起手那个对话没配 LLM → 它就是**配置界面**（newTab 已经把表单摊开了）。
+    // 理由：没配的对话一句话都发不出去（发了也会被弹回配置框），摆个空聊天框是在骗人；
+    // 想先看一眼界面就按 ESC / 点「取消」收起来，/llm 还能再叫回来。
+  }
+
+  /**
+   * 造一份**新的空表单**。配置框是**每个对话一份**的（存在 tab.cfg 上）：
+   * 切走只是看不见了，填到一半的地址/Key、选到第几行，全都留在这个对话身上 ——
+   * 切回来还是刚才那个样子，不会因为去隔壁看一眼就被清空，更不会被当成"编到别人身上"。
+   * 字段名 / 候选项名都存**语言包 key**（`labelKey` / opts 第二项），绘制时现取现翻 ——
+   * 存成品文案的话，配置框开着的时候切语言它不会跟着变。labelKey 只给显示用，值本身是数据。
+   */
+  _mkForm() {
+    const f = {
       fields: [
         { key: 'baseUrl', labelKey: 'ui.agent.field.apiAddr', value: '', ph: 'https://api.openai.com/v1', mask: false },
         { key: 'apiKey', labelKey: 'ui.agent.field.apiKey', value: '', ph: 'sk-...', mask: true },
@@ -378,50 +477,126 @@ export class AgentPanel {
           key: 'provider', labelKey: 'ui.agent.field.provider', value: 'auto', mask: false, cycle: true,
           opts: [['auto', 'ui.agent.opt.auto'], ['openai', 'ui.agent.opt.openai'], ['anthropic', 'ui.agent.opt.anthropic']],
         },
-        // 心情控制语句 [[mood:...]] 是否原样显示在对话里（默认隐藏：多数时候只看正文；
-        // 想确认 agent 给自己下了什么指令时再打开）。它只影响显示，不影响协议本身 ——
-        // 隐藏是**整行不渲染**，不是把文字抹成空白（那会留下一条空行）。
+        // 形象（角色素材包）：候选项 = 「自动」+ 所有已保存的形象包（characters/<id>）。
+        // 「自动」不是"选第一个包"，而是**保存时让这个对话配好的模型自己挑一个**
+        // （见 configSave / pickArt）。挑的结果存 tab.charpackPicked，包还在就一直是它。
         {
-          key: 'moodTags', labelKey: 'ui.agent.field.moodTags', value: 'hide', mask: false, cycle: true,
-          opts: [['show', 'ui.agent.opt.show'], ['hide', 'ui.agent.opt.hide']],
+          key: 'charpack', labelKey: 'ui.agent.field.charpack', value: 'auto', mask: false, cycle: true,
+          opts: this._artOpts(),
+        },
+        // 性格：跟形象同一层（每个对话一份，随存档走）。这是**喂给模型的人设**，
+        // 决定它情绪表达的路子 —— 'default' 是留白，不额外加人设
+        // （见 server/moodprotocol.js 的 PERSONAS 那份表）。
+        {
+          key: 'persona', labelKey: 'ui.agent.field.persona', value: 'default', mask: false, cycle: true,
+          opts: PERSONA_OPTS,
         },
       ],
-      idx: -1,                 // -1 未编辑；0..3 字段；4 保存；5 取消
+      idx: -1,                 // -1 未编辑；0..4 字段；5 保存；6 取消
       caret: 0,                // 当前字段里的光标位置（字符索引）
       msgKey: '',              // 状态行存的是 key + 参数（现取现翻，见 setMsg）
       msgArgs: null,
       busy: false,
+      bad: false,
+      isNew: false,            // 这份表单是不是"刚点 + 建出来的对话"→ 那种情况下取消 = 撤销新建
+      auto: false,             // 是不是"这个对话还没配 LLM，自己摊开的"（区别于人手点出来的）
+      _syncedIdx: null,        // main.js 用：上次同步过隐藏输入框的字段序号（换字段才挪光标）
     };
-    // 心情语句显示开关：本地偏好，不进 LLM 配置（跟后端无关），存 localStorage
-    this.showMoodTags = readMoodPref();
-    this.form.fields[4].value = this.showMoodTags ? 'show' : 'hide';
-    this.newTab();
-    this.tab.pushT('agent', 'ui.agent.ready');
-    // 启动即拉一次后端配置：没配过就自动弹配置框
-    getLlmConfig().then((s) => {
-      if (!s) return;
-      this.llmConfigured = !!s.configured;
-      this._syncLlm();
-      if (s.baseUrl) this.form.fields[0].value = s.baseUrl;
-      if (s.model) { this.llmModel = s.model; this.form.fields[2].value = s.model; }
-      if (s.provider) this.form.fields[3].value = normProvider(s.provider);
-      if (!this.llmConfigured) this.configOpen();
-    }).catch(() => { this.configOpen(); });
+    return f;
   }
 
+  /**
+   * 形象字段的候选项：「自动」+ 所有已保存的包。
+   * 包清单由主装配注入（`getPacks`）—— agent.js 不认识素材包加载那套，也不该认识。
+   * 一个包都没有（后端没起来 / characters/ 是空的）就只剩「自动」，字段仍然可用。
+   */
+  _artOpts() {
+    const list = (this.getPacks && this.getPacks()) || [];
+    return [['auto', 'ui.agent.opt.charpackAuto']]
+      .concat(list.map((p) => [p.id, p.name || p.id]));
+  }
+
+  /** 交给模型挑的那些形象（不带「自动」）：只要 id + 名字，模型不需要别的 */
+  _artCands() {
+    const list = (this.getPacks && this.getPacks()) || [];
+    return list.map((p) => ({ id: p.id, name: p.name || p.id }));
+  }
+
+  /**
+   * 重建**所有**对话里那份表单的形象候选项。
+   * 启动时素材包是异步加载的，而配置框可能在此之前就建好了（起手那个没配的对话会自己摊开）——
+   * 所以包加载完、或包清单有变化时，主装配叫一次这里补齐候选项。
+   */
+  refreshArtOpts() {
+    for (const tab of this.tabs) {
+      const f = tab.cfg;
+      if (!f) continue;
+      const fd = f.fields.find((x) => x.key === 'charpack');
+      if (fd) fd.opts = this._artOpts();
+    }
+  }
   /** 状态行文案：存 key + 参数，绘制时现取现翻（配置框开着时切语言也能跟着变） */
-  setMsg(key, args) { this.form.msgKey = key || ''; this.form.msgArgs = args || null; }
+  setMsg(key, args) {
+    const f = this.form;
+    if (!f) return;                      // 没人在配：那行本来就是配置框里的状态行，没人看得见
+    f.msgKey = key || '';
+    f.msgArgs = args || null;
+  }
 
-  /** 把"接没接 LLM"同步给每个对话（对话自己不知道后端配置） */
-  _syncLlm() { for (const t of this.tabs) t.llmOk = this._llmOk; }
+  // ── 配置框：状态挂在**对话**身上（tab.cfg），不在面板上 ─────────────────
+  // 这样"切走"就只是看不见而已：填到一半的地址 / Key、焦点停在第几行，全都跟着对话留着，
+  // 切回来还是原样；也不会出现"面板这份表单被当成隔壁对话的配置读走 / 存错"的串台。
+  get form() { return (this.tab && this.tab.cfg) || null; }
+  /** 面板现在是以配置框的形态在显示吗（由当前对话有没有摊开的表单直接派生） */
+  get inConfig() { return !!this.form; }
+  /** 这份表单是"刚点 + 建出来的对话"吗 → 那种情况下取消 = 撤销新建 */
+  get _cfgNew() { return !!(this.form && this.form.isNew); }
+  set _cfgNew(v) { const f = this.form; if (f) f.isNew = !!v; }
+  /** main.js 用它记住"上次同步过隐藏输入框的字段序号"——得跟着各自那份表单走 */
+  get _cfgIdx() { return this.form ? this.form._syncedIdx : null; }
+  set _cfgIdx(v) { const f = this.form; if (f) f._syncedIdx = v; }
 
-  /** 后端有没有配好 LLM —— 面板级状态，一改就同步给所有对话（含之后新建的） */
-  get llmConfigured() { return !!this._llmOk; }
-  set llmConfigured(v) { this._llmOk = !!v; this._syncLlm(); }
+  /**
+   * 当前对话接没接 LLM。注意这是**按对话**的：别的对话配没配跟当前这个无关
+   * （所以没有 setter —— 想配就往 tab.llm 里写，见 configSave）。
+   */
+  get llmConfigured() { return !!(this.tab && this.tab.llm); }
+
+  /** 框顶右上角显示的模型 id：取**当前对话**那份配置里的（不同对话可能接不同模型） */
+  get llmModel() { return (this.tab && this.tab.llm) ? this.tab.llm.model : ''; }
 
   // ── 当前对话 ──
   get tab() { return this.tabs[this.active] || null; }
   _nextId() { return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+
+  /**
+   * 记住"现在落在哪个对话上"（存进 ui-state，见 server 的 UI_PATH 那段）。
+   * 用户 2026-10-17 报的：「切到第一个对话，关掉 HUD 再开，它是第二个对话」——
+   * restore() 原来一律落在"最近更新的那个"，把人手切走的选择盖掉了。
+   *
+   * 只记 **id**，不记下标：标签顺序每次重开都可能不一样（restore 按 updatedAt 排），
+   * 记位置下次就指到别人身上。存的是"哪个对话"，不是"第几个标签"。
+   * 失败（后端没起来）就算了：下次开回去按默认落，顶多这一次不跟手，不该因此报错。
+   */
+  _saveActive() {
+    if (!this._restored) return;      // 还没读档：此刻的落点不算数（见构造函数里 _restored 那段）
+    const t = this.tab;
+    try { Promise.resolve(saveUiState({ active: t ? t.id : '' })).catch(() => {}); } catch (e) { /* 同上 */ }
+  }
+
+  /**
+   * 落在"上次退出时那个对话"上（main.js 读完 ui-state 后调）。
+   * 找不到（那个对话被删了 / 存档读不出来 / 没存过）就保持 restore() 的默认落点。
+   * 只认 id：同色号可能被复用、标题会变、位置会动，只有 id 是那个对话本身。
+   */
+  selectSavedConv(id) {
+    const want = String(id || '');
+    if (!want) return false;
+    const i = this.tabs.findIndex((t) => t.id === want);
+    if (i < 0) return false;
+    if (i === this.active) { this._saveActive(); return true; }   // 已经在那儿：不用切，但记一笔
+    return this.selectTab(i);
+  }
 
   // ── 转发给当前对话的属性（主装配按老接口用，不用感知多标签）──
   get focus() { return this._focus; }
@@ -459,7 +634,16 @@ export class AgentPanel {
     return this.tab ? this.tab.send(text) : undefined;
   }
   abort() { if (this.tab) this.tab.abort(); }
-  noteMood(e) { return this.tab ? this.tab.noteMood(e) : false; }
+  /** 当前该显示的那份心情（整个应用只有一块屏幕，见 mood.js 的 moodView） */
+  activeMood() { return this.tab ? this.tab.mood : null; }
+  /**
+   * `panel.mood` 的兼容写法 = **当前对话**的心情（只读快照，**不是**一个可长期持有的对象：
+   * 切个标签它就换人了）。要"跟着当前对话走"的视图用 mood.js 的 moodView()（main.js 就是这么做的），
+   * 要某个对话自己的那份用 `tab.mood`。调试时 `__panels.agent.mood.state` 这么读没问题。
+   */
+  get mood() { return this.activeMood(); }
+  /** 当前对话该用的形象包 id（'' = 还没定，主装配回退默认包）。见 AgentConv.artId */
+  artId() { return this.tab ? this.tab.artId() : ''; }
   onArrow(dir) { return this.tab ? this.tab.onArrow(dir) : true; }
   onWheel(d) { return this.tab ? this.tab.onWheel(d) : false; }
 
@@ -477,10 +661,13 @@ export class AgentPanel {
     return this._colorSeq++ % TAB_COLORS.length;
   }
 
-  _mkTab(id) {
-    const t = new AgentConv(this.mood, id, this._pickColor());
-    t.showMoodTags = this.showMoodTags;
-    t.llmOk = this.llmConfigured;
+  _mkTab(id, ci, savedMood) {
+    // ci 传了就用它（**恢复存档时必须用回来的那个**，见 restore：色号是认标签的记号，
+    // 每次重开都重新派一遍的话，用户看到的"蓝的那个 = 我刚才问问题那个"就废了）；
+    // 没传（新建对话）才现派一个。
+    // savedMood = 存档里这个对话自己的心情快照；**不传就是新对话 → 从待机开始**
+    // （用户 2026-10-17："我现在第一个对话是生气，然后我按 +，怎么还是生气"）。
+    const t = new AgentConv(id, (ci === undefined || ci === null) ? this._pickColor() : ci, savedMood);
     t.focus = this._focus;
     t.onDirty = (c) => this._markDirty(c);
     t.onToken = this._onToken;
@@ -490,20 +677,65 @@ export class AgentPanel {
   }
 
   // ── 对话管理 ──
-  newTab() {
+  /**
+   * 「按「+」那一刻，这个对话身上是什么配置」—— 新对话拿它预填。**只看传进来的这个对话**：
+   * 它正摊着配置框就以框里的内容为准（你看着什么就继承什么），框收着就用它已保存的那份；
+   * 两者都没有 → null，新表单留空。
+   * **不去翻别的对话、也不留"最近配好的那份"当兜底**：那不是"按 + 时所在的会话"，
+   * 拿它预填会让人以为点错了对话（2026-10-14 用户指出："应该是按 + 时所在的会话才对"）。
+   */
+  _llmOfTab(tab) {
+    const f = tab && tab.cfg;
+    if (f) {
+      const v = (k) => { const x = f.fields.find((y) => y.key === k); return x ? String(x.value || '').trim() : ''; };
+      // 半填的也认：预填不是配置，真不真用得点了「保存」（那里会先验连通）
+      const live = { baseUrl: v('baseUrl'), apiKey: v('apiKey'), model: v('model'), provider: normProvider(v('provider')) };
+      if (live.baseUrl || live.apiKey) return live;
+    }
+    return (tab && tab.llm) ? { ...tab.llm } : null;   // 一律拷一份：改新对话不该动到老对话那份
+  }
+
+  /**
+   * 新建一个对话标签。
+   * fromUser = true 表示是**用户主动点的「+」/ 按的 ^⇧T** —— 那种情况建好就弹配置框，
+   * 并且用"按 + 那一刻正看着的那个对话"那份配置预填：想换个模型 / 换个中转站，
+   * 就在这个新对话里改，老对话照旧用自己那份，互不干扰。当前那个没配过就留空表单。
+   * 内部新建（构造函数里那个起手对话、/del chat 之后补的那个）走另一条：它没配 LLM，
+   * 也就同样是停在配置界面 —— 见 _openFormIfUnset。
+   */
+  newTab(fromUser) {
     if (this.tabs.length >= MAX_CONVS) return null;
+    // 预填来源：**按 + 时所在的那个对话**（不是"最后建的那个"、也不是"最近配好的那份"）
+    const src = this.tab;                        // 先抓住它：下面 push 之后 this.tab 就成新的了
+    const seed = this._llmOfTab(src);
+    const seedArt = src ? src.charpack : 'auto';  // 形象跟 LLM 配置同一个来源
+    const seedPersona = src ? src.persona : 'default';   // 性格同理：按 + 时看着的那个对话是谁，新对话就先是谁
     const t = this._mkTab(this._nextId());
     this.tabs.push(t);
     this.active = this.tabs.length - 1;
     this.syncFocus();
+    this._saveActive();          // 按完「+」落在新对话上；关掉再开也该是它
+    // seed 只是**灌进表单**，不写进 t.llm —— 新对话得真的点了「保存」才算配好：
+    //   ① 拷一份给表单（不是共用引用）：在新对话里改地址 / Key 不该把上一份也改了
+    //   ② 不替他先配好：万一没配就切走，这个空对话要能被干净地撤销掉，
+    //      不能因为"继承过一份配置"反而落进存档里（现在 t.llm 一直是空的，写盘会跳过它）
+    if (fromUser) this.configOpen({ isNew: true, seed, seedArt, seedPersona });
+    // 内部新建（冷启动那个、/del chat 之后补的）：没带走任何配置 → 停在配置界面
+    else this._openFormIfUnset(t, seed, seedArt, seedPersona);
+    // 用户点「+」建的标签**立刻记一笔账**：他要这个对话，关掉 HUD 再开也得在。
+    // 不能等"说了话"才存 —— 没配完就关掉是最常见的情形，那正好是最该留住的时候。
+    if (fromUser) { t.keepOpen = true; this._markDirty(t); }
     return t;
   }
 
+  // 切对话**不做任何清理**：配置表单挂在对话身上（tab.cfg），跟着对话自己走。
+  // 切走只是看不见，切回来还是刚才那个样子（填到一半的 Key 也在）；想撤销得明确点「取消」。
   selectTab(i) {
     if (typeof i !== 'number' || i < 0 || i >= this.tabs.length) return false;
     if (i === this.active) return false;
     this.active = i;
     this.syncFocus();
+    this._saveActive();                        // 关掉 HUD 再开，还得是这一个（见 _saveActive）
     return true;
   }
 
@@ -513,6 +745,7 @@ export class AgentPanel {
     if (n < 2) return false;
     this.active = (this.active + (dir > 0 ? 1 : -1) + n) % n;
     this.syncFocus();
+    this._saveActive();
     return true;
   }
 
@@ -536,6 +769,7 @@ export class AgentPanel {
     if (k < this.active) this.active--;
     if (this.active >= this.tabs.length) this.active = this.tabs.length - 1;
     this.syncFocus();
+    this._saveActive();          // 关掉的是当前那个 → 落在谁身上，下次开就得是谁
     return true;
   }
 
@@ -560,6 +794,12 @@ export class AgentPanel {
       // 没有装配钩子（理论上不会）时**什么都不做**：删存档这种事不能有"静默兜底"，
       // 宁可这条命令看起来没反应，也不能在没有确认的情况下把对话删掉。
       if (this.onDelAsk) this.onDelAsk();
+      return true;
+    }
+    // /llm：把当前对话的配置框叫回来。配置框可以随手收起来（ESC / 取消）去看历史，
+    // 没有这个入口的话，收起来就再也找不回了。
+    if (name === 'llm' && args.length === 0) {
+      this.configOpen();
       return true;
     }
     return false;
@@ -606,129 +846,281 @@ export class AgentPanel {
         // 存盘时把 k / a（i18n 的 key + 参数）剥掉 —— 存档格式跟以前完全一样，
         // 语言包换了以后旧存档也能正常读（读回来就只剩 text，按当时那句显示）。
         const msgs = conv.msgs.map(({ k, a, ...rest }) => rest);
-        saveConv({ id: conv.id, title: conv.title(), msgs });
+        // llm = 这个对话自己的 API 配置。**明文落盘**，但 run/ 在 .gitignore 与推送脚本的排除表里
+        // —— 它只存在于本机，绝不会跟着代码推上 GitHub（这条在 README 里也写了）。
+        // keep = "这个标签真的开着"：让后端在"既没说过话也没配过"时也存下来，
+        // 免得关掉 HUD 再开标签数对不上（见 AgentConv.keepOpen）。
+        // charpack = 这个对话的形象（'auto' = 让模型挑），charpackPicked = 模型挑出来的那个包。
+        saveConv({
+          id: conv.id, title: conv.saveTitle(), msgs, llm: conv.llm || null,
+          keep: !!conv.keepOpen, charpack: normArt(conv.charpack), charpackPicked: normArtPick(conv.charpackPicked),
+          // persona = 这个对话的性格（见 AgentConv.persona）；脏值收敛成 default，不猜
+          persona: normPersona(conv.persona),
+          // mood = 这个对话自己的心情（state/表情/强度/心里话/配色值）。
+          // 跟形象、性格同一个道理：**它属于这一段对话**，不是全局的（见 AgentConv 构造函数）。
+          // 不存的话，重启一次所有对话都回待机 —— "关掉再开跟退出前一样"就废了。
+          mood: conv.mood ? conv.mood.snapshot() : null,
+          // 色号跟着对话存：重启后"那个颜色 = 那个对话"的对应关系不能断（2026-10-15 用户报的）。
+          ci: conv.ci,
+        });
       } catch (e) { /* 后端没起来就算了 */ }
     }
   }
 
   /**
    * 启动时从后端恢复：把存档的对话重新变成标签。
-   * 一个都没存过（或后端没起来）就保留构造函数里那个空对话，什么都不做。
+   * 一个都没存过（或后端没起来）就保留构造函数里那个空对话 —— 但**要把它记进存档**，
+   * 否则"我开着 2 个没配的标签、关掉 HUD 再开只剩 1 个"就没法避免（2026-10-14 用户报的）。
    */
   async restore() {
+    // 恢复这一趟**无论怎么收尾**（后端没起来、一个存档都没有、正常恢复）都要开闸：
+    // 开了闸，切标签才允许把"落在哪个对话"记进 ui-state（见 _saveActive / _restored）。
+    // 不开的话，后端那次刚好慢一点，往后一整趟运行都不记账 —— 那正是要修的症状。
+    try { await this._restoreTabs(); } finally { this._restored = true; }
+  }
+
+  async _restoreTabs() {
     let r = null;
-    try { r = await listConvs(); } catch (e) { return; }
+    try { r = await listConvs(); } catch (e) { return; }   // 后端没起来：不落盘（落了也写不进去）
     const metas = (r && Array.isArray(r.convs)) ? r.convs : [];
-    if (!metas.length) return;
+    if (!metas.length) return this._keepBootTab();
     const loaded = [];
     for (const m of metas.slice(-MAX_CONVS)) {
       let c = null;
       try { c = await getConv(m.id); } catch (e) { c = null; }
-      if (c && Array.isArray(c.msgs) && c.msgs.length) loaded.push(c);
+      // 空的也要收：那个标签可能是"用户开着、还没来得及配/说话"的（keep 存下来的）
+      if (c && Array.isArray(c.msgs)) loaded.push(c);
     }
-    if (!loaded.length) return;
+    if (!loaded.length) return this._keepBootTab();
     for (const t of this.tabs) t.dispose();
     this.tabs = [];
     this._dirty.clear();
-    this._colorSeq = 0;                        // 重新按色轮从头上派色，颜色才稳定
+    this._colorSeq = 0;                        // 只影响"之后新开的"对话；恢复出来的用存档里那个
+    // 恢复时没有"按 + 时所在的对话"这回事，只能拿**前面那个对话**当参照：
+    // 它自己那份配置（最近配好的那份）给后面没配的对话预填一下，省得每个都重贴。
+    let prevLlm = null, prevArt = 'auto', prevPersona = 'default';
     for (const c of loaded) {
-      const t = this._mkTab(c.id);
+      // 颜色：存档里那个才是"认标签的记号"，得原样还回来（不然重启一次颜色就洗牌 ——
+      // 标签顺序是按 updatedAt 排的，跟当初的创建顺序不一样）。老存档没这个字段、值坏了、
+      // 或者跟前面某个对话撞了 → 现派一个（_pickColor 会跳过已经用掉的）。
+      const want = normCi(c.ci);
+      const ci = (want !== null && !this.tabs.some((x) => x.ci === want)) ? want : this._pickColor();
+      const t = this._mkTab(c.id, ci, c.mood);
       t._title = c.title || '';
+      t.keepOpen = true;                       // 它在存档里 —— 以后再落盘也带着 keep，不会被判成"空对话"丢掉
+      // 每个对话带回自己那份配置
+      if (c.llm) { t.llm = { ...c.llm }; prevLlm = { ...c.llm }; }
+      // 以及自己那个形象（'auto' 或包 id，见 AgentConv.charpack）
+      t.charpack = normArt(c.charpack);
+      t.charpackPicked = normArtPick(c.charpackPicked);
+      prevArt = t.charpack;
+      // 以及性格（见 AgentConv.persona）——脏值一律回落 default，不猜
+      t.persona = normPersona(c.persona);
+      prevPersona = t.persona;
       t.msgs = c.msgs.map((m) => {
         const o = { role: m.role, text: String(m.text || '') };
         if (m.result) o.result = String(m.result);
         return o;                              // 存档里没有 stream/done —— 半截流不会残留
       });
       this.tabs.push(t);
+      // 带回了自己的配置就没事；没带回来（老存档、或在配置前就关掉的那次）→ 照规矩停在配置界面。
+      this._openFormIfUnset(t, prevLlm, prevArt, prevPersona);
     }
-    this.active = this.tabs.length - 1;        // 落在最近更新的那个对话上
+    // 默认落在最近更新的那个对话上 —— 这只是**兜底**：真正常用的是"上次退出前那个"，
+    // 由 main.js 读完 ui-state 后调 selectSavedConv() 拨过去（2026-10-17 用户报的：
+    // 切到第一个对话关掉，重开却落在第二个）。这里不调 _saveActive：此刻还不知道该落哪，
+    // 早写一笔只会把盘上那份正确答案盖掉。
+    this.active = this.tabs.length - 1;
     this.syncFocus();
   }
 
-  // ── 配置框 ────────────────────────────────────────
-  configOpen() {
-    this.inConfig = true;
-    this.form.idx = 0;
-    this.form.bad = false;
-    this.setMsg('ui.agent.form.hint');
-    if (this._clearHidden) this._clearHidden();   // 清空可能残留的聊天输入框文本
+  /**
+   * 启动时一个存档都没恢复出来（第一次开、存档被删光、或全读不出来）：
+   * 把构造函数留下的那个空标签**记进存档**再收工。
+   * 这样下次开 HUD 就恢复出它 —— 标签数跟关之前一样，不会再"自己少一个"。
+   */
+  _keepBootTab() {
+    const t = this.tab;
+    if (!t) return;
+    t.keepOpen = true;
+    this._markDirty(t);                        // 立刻排一次落盘（debounce 之后真正写）
+    // 这里没有"上一个对话"可以预填（存档一个都没读出来）→ 空表单，等人自己填
+    this._openFormIfUnset(t, null, null, 'default');
   }
+
+  // ── 配置框 ────────────────────────────────────────
+  /**
+   * 把一份配置灌进**指定那份表单**（表单在对话身上，所以要显式传，不能默认用"当前"那份）。
+   * llm 为 null（这个对话还没配过）→ 字段全清空。
+   * art = 形象那一栏预填成什么（'auto' 或包 id）。它跟 llm 来源**同一个对话** ——
+   * 新对话继承的是"按 + 时看着的那个对话"的形象设置；「自动」继承过去还是「自动」，
+   * 新对话的模型会自己再挑一个（挑的结果不继承：那是它自己的形象）。
+   * persona = 性格那一栏预填成什么（'default' 或某个性格 id），同样跟 llm 来源同一个对话。
+   */
+  _fillForm(form, llm, art, persona) {
+    if (!form) return;
+    const set = (k, v) => { const f = form.fields.find((x) => x.key === k); if (f) f.value = v || ''; };
+    set('baseUrl', llm ? llm.baseUrl : '');
+    set('apiKey', llm ? llm.apiKey : '');
+    set('model', llm ? llm.model : '');
+    set('provider', normProvider(llm ? llm.provider : 'auto'));
+    set('charpack', art || 'auto');
+    set('persona', normPersona(persona));
+    form.caret = 0;
+  }
+
+  /**
+   * 把**指定对话**的配置表单摊开（returns 那份表单）。configOpen 是它对外的壳 ——
+   * restore() 重建对话时还不能改 this.active，所以需要这种显式传目标的形式。
+   * opts.isNew：这是刚点「+」建出来的对话 → 取消 = 撤销新建（删标签）
+   * opts.seed：首次摊开时按它预填（优先于这个对话自己那份）
+   */
+  _openForm(tab, opts) {
+    const o = opts || {};
+    if (!tab) return null;
+    const reuse = !!tab.cfg;
+    const f = tab.cfg || this._mkForm();      // 已经在配了就接着用那份，别把人填的东西冲掉
+    f.isNew = !!o.isNew;
+    f.auto = !!o.auto;
+    f.idx = 0;
+    f.bad = false;
+    f.busy = false;
+    tab.cfg = f;
+    if (!reuse) {
+      this._fillForm(f, o.seed || tab.llm, o.seedArt || (tab ? tab.charpack : 'auto'),
+        o.seedPersona || (tab ? tab.persona : 'default'));
+    }
+    f.msgKey = o.isNew ? 'ui.agent.form.hintNew' : 'ui.agent.form.hint';
+    f.msgArgs = null;
+    // 隐藏输入框只服务于**当前**这个对话（别的表单用不上，也不该被它的内容带跑）
+    if (tab === this.tab && this._clearHidden) this._clearHidden();
+    return f;
+  }
+
+  /**
+   * 没配 LLM 的对话**就该停在配置界面**，而不是摆一个能打字、发出去却被弹回来的空聊天框。
+   * 适用：冷启动那个起手对话、/del chat 之后补的那个、restore 出来没带回配置的那些。
+   * seed 是拿来预填的那份配置（**由调用方决定是谁的**：新建走 _llmOfTab，恢复走前面那个对话；
+   * 没有就留空表单）。
+   */
+  _openFormIfUnset(tab, seed, seedArt, seedPersona) {
+    if (!tab || tab.llm || tab.cfg) return null;
+    return this._openForm(tab, { seed, seedArt, seedPersona, auto: true });
+  }
+
+  /**
+   * 打开配置框。编的是**当前对话自己的**那份配置，表单也存在这个对话上 ——
+   * 所以切走不需要"收拾现场"：回来时刚才填的一半还在。
+   * opts.isNew = true：这是刚点「+」建出来的对话 —— 那种情况下点取消 = 撤销新建（删掉这个标签）。
+   */
+  configOpen(opts) { return this._openForm(this.tab, opts); }
+  /** 收起配置框：把这个对话身上那份表单摘掉（连同状态行一起消失） */
   configClose() {
-    this.inConfig = false;
-    this.form.idx = -1;
-    this.setMsg('');
+    const f = this.form;
+    if (f) f.idx = -1;
+    if (this.tab) this.tab.cfg = null;
     if (this._clearHidden) this._clearHidden();   // 清掉残留的字段文本，免得污染聊天输入框
   }
-  configNav(dir) {
-    const n = this.form.fields.length + 2;     // 4 字段 + 保存 + 取消
-    this.form.idx = (this.form.idx + dir + n) % n;
+  /**
+   * 点「取消」会怎样，取决于这个配置框是怎么打开的：
+   *   新建对话时打开的（isNew）→ 撤销新建，直接删掉这个刚建的标签（结果等同 /del chat）。
+   *     "建了又不配"只会留下一个没用的空对话，所以不留。唯一例外是**它已是最后一个标签**：
+   *     删了面板就空着没法用，那种情况退化成普通关闭。
+   *   其余（自动摊开的、/llm 手动打开的）→ 只收起来：这个对话还能看历史、还能切走，
+   *     但它没配 LLM 就是发不出消息，所以补一句提示告诉人怎么回来。
+   */
+  configCancel() {
+    const f = this.form;
+    if (!f) return;
+    const victim = (f.isNew && this.tabs.length > 1) ? this.tab : null;
+    this.configClose();
+    // 新建的对话还没内容，删它不用弹那道红条确认 —— 那道确认是给"已经有内容的对话"用的
+    if (victim) { this.closeTab(this.tabs.indexOf(victim)); return; }
+    // 状态行随着配置框一起没了，这句话得落在对话里才看得见
+    if (!this.llmConfigured) this.tab.pushT('info', 'ui.agent.form.hintSkip');
   }
-  // 循环字段（协议 / 心情语句）：←→ 在候选值里转一圈
+  configNav(dir) {
+    const f = this.form;
+    if (!f) return;
+    const n = f.fields.length + 2;     // 字段 + 保存 + 取消
+    f.idx = (f.idx + dir + n) % n;
+  }
+  // 循环字段（协议 / 形象）：←→ 在候选值里转一圈
+  // 注意形象这一栏**不立刻生效** —— 它跟 LLM 配置一样，点了「保存」才算数
+  // （「自动」还得等保存时问过模型才知道是哪个包）。
   configCycle(dir) {
-    const f = this.form.fields[this.form.idx];
+    const form = this.form;
+    if (!form) return;
+    const f = form.fields[form.idx];
     if (!f || !f.cycle || !f.opts) return;
     const i = f.opts.findIndex((o) => o[0] === f.value);
     const n = (i + dir + f.opts.length) % f.opts.length;
     f.value = f.opts[n][0];
-    if (f.key === 'moodTags') this.applyMoodPref();     // 立刻生效，不用等保存
   }
 
-  /** 把配置框里的「心情语句」选择落到运行时偏好并记住（顺便同步给每个对话） */
-  applyMoodPref() {
-    const f = this.form.fields.find((x) => x.key === 'moodTags');
-    this.showMoodTags = (f ? f.value : 'hide') === 'show';   // 兜底也走隐藏，跟默认值一致
-    for (const t of this.tabs) t.showMoodTags = this.showMoodTags;
-    writeMoodPref(this.showMoodTags);
-  }
   // 当前字段是否接受文本输入（循环字段不接受，交给 ←→）
   cfgFieldEditable() {
-    const f = this.form.fields[this.form.idx];
+    const form = this.form;
+    const f = form ? form.fields[form.idx] : null;
     return !!(f && !f.cycle);
   }
   /** 当前字段是不是"循环选择"型（协议）——只有它才吃 ←→ */
   cfgCycleField() {
-    const f = this.form.fields[this.form.idx];
+    const form = this.form;
+    const f = form ? form.fields[form.idx] : null;
     return !!(f && f.cycle);
   }
   /** 隐藏输入框的光标变了（←→ / Home / End / 点击），同步到当前字段 */
   syncFormCaret(pos) {
-    const f = this.form.fields[this.form.idx];
+    const form = this.form;
+    if (!form) return;
+    const f = form.fields[form.idx];
     if (!f || f.cycle) return;
     const n = (f.value || '').length;
-    this.form.caret = Math.max(0, Math.min(n, pos ?? n));
+    form.caret = Math.max(0, Math.min(n, pos ?? n));
   }
   /** 切到另一个字段时，光标默认停在该字段末尾 */
   formCaretToEnd() {
-    const f = this.form.fields[this.form.idx];
-    this.form.caret = f ? (f.value || '').length : 0;
+    const form = this.form;
+    if (!form) return;
+    const f = form.fields[form.idx];
+    form.caret = f ? (f.value || '').length : 0;
   }
   configEnter() {
-    const b = this.form.fields.length;
+    const form = this.form;
+    if (!form) return;
+    const b = form.fields.length;
     // 没接 LLM 时这张表单会盖住对话区，键盘其实是落在字段上的（输入框就是字段本身）——
     // 那种状态下也得删得掉不想要的对话，否则"打 /del chat 就能删"这条规矩就成了有时灵有时不灵。
     // 命中了就把字段让出来：那是 API 地址/Key 的位置，不能留一行命令在里头。
-    const i = this.form.idx;
-    if (i >= 0 && i < b && this.command(this.form.fields[i].value)) {
-      this.form.fields[i].value = '';
-      this.form.caret = 0;
+    const i = form.idx;
+    if (i >= 0 && i < b && this.command(form.fields[i].value)) {
+      form.fields[i].value = '';
+      form.caret = 0;
       if (this._clearHidden) this._clearHidden();   // syncCfgHidden 刚才可能又把它填回去了
       return;
     }
     if (i >= 0 && i < b) {
       // 字段上回车：最后一个字段→跳到保存按钮，否则下一个字段
-      this.form.idx = (i === b - 1) ? b : i + 1;
+      form.idx = (i === b - 1) ? b : i + 1;
     } else if (i === b) {
       this.configSave();
     } else if (i === b + 1) {
-      if (this.llmConfigured) this.configClose();
+      this.configCancel();
     }
   }
   // 保存前必须先连通验证；验证不过就**不写盘**——只放过一个真能用的配置
   async configSave() {
-    if (this.form.busy) return;
+    const form = this.form;
+    if (!form || form.busy) return;
+    const tab = this.tab;                     // 认准触发保存的那个对话：中途可能切走过
     const get = (k) => {
-      const f = this.form.fields.find((x) => x.key === k);
+      const f = form.fields.find((x) => x.key === k);
       return (f ? f.value : '').trim();
+    };
+    const say = (key, args) => {              // 状态行只写这份表单，不会串到别的对话去
+      form.msgKey = key || '';
+      form.msgArgs = args || null;
     };
     const body = {
       baseUrl: get('baseUrl'),
@@ -736,53 +1128,92 @@ export class AgentPanel {
       model: get('model'),
       provider: normProvider(get('provider')),
     };
-    if (!body.baseUrl || !body.apiKey) { this.form.bad = true; this.setMsg('ui.agent.form.needBoth'); return; }
+    if (!body.baseUrl || !body.apiKey) { form.bad = true; say('ui.agent.form.needBoth'); return; }
 
-    this.form.busy = true;
-    this.form.bad = false;
-    this.setMsg('ui.agent.form.testing');
+    form.busy = true;
+    form.bad = false;
+    say('ui.agent.form.testing');
     // 变量名不能叫 t —— 那是 i18n 的取词函数（本文件顶部 import 的），撞名后 t('ui...') 就炸了
     let res;
     try { res = await testLlmConfig(body); } catch (e) { res = { ok: false, error: String(e.message) }; }
 
     if (!res || !res.ok) {
       // 验证失败：保留原输入框内容让用户改，已有配置（若之前配通过）不受影响
-      this.form.busy = false;
-      this.form.bad = true;
-      this.setMsg('ui.agent.form.testFail', { err: (res && res.error) || t('ui.shell.unknownError') });
+      form.busy = false;
+      form.bad = true;
+      say('ui.agent.form.testFail', { err: (res && res.error) || t('ui.shell.unknownError') });
       return;
     }
 
     try {
       // 自动识别成功时把认出来的协议一起存下来，之后对话就不用再猜
       if (res.provider) body.resolved = res.provider;
-      const r = await saveLlmConfig(body);
-      this.llmConfigured = !!(r && r.configured);
-      this._syncLlm();
-      if (this.llmConfigured) {
-        if (r.baseUrl) this.form.fields[0].value = r.baseUrl;
-        if (r.model) { this.llmModel = r.model; this.form.fields[2].value = r.model; }
-        this.form.busy = false;
-        this.form.bad = false;
-        // via / pname 是**片段**：由各自的语言包拼进整句（别的语言语序不同，不能按片段硬拼）
-        const via = res.via === 'models' ? t('ui.agent.form.modelChecked') : '';
-        const pname = res.provider ? ` · ${providerLabel(res.provider)}` : '';
-        this.setMsg('ui.agent.verifyOk', { ms: res.ms, via, pname });
-        setTimeout(() => {
-          this.configClose();
-          this.pushT('info', 'ui.agent.llmOn', { model: r.model || '' });
-        }, 900);
-      } else { this.form.busy = false; this.form.bad = true; this.setMsg('ui.agent.form.saveFail'); }
-    } catch (e) { this.form.busy = false; this.form.bad = true; this.setMsg('ui.agent.form.saveError', { err: e.message }); }
+      const cfg = {
+        baseUrl: body.baseUrl,
+        apiKey: body.apiKey,
+        model: body.model || 'gpt-3.5-turbo',
+        provider: body.provider,
+        resolved: body.resolved || '',
+      };
+      if (!tab) { form.busy = false; form.bad = true; say('ui.agent.form.saveFail'); return; }
+      // 只写**这个对话**：不动别的对话、也不再往后端写任何全局文件
+      tab.llm = cfg;
+      // 形象：用户选的那个值先落下来（'auto' 或包 id）
+      const want = normArt(get('charpack'));
+      tab.charpack = want;
+      tab.charpackPicked = '';                 // 重挑：上一次的结果不沿用
+      // 性格：选到哪个存哪个（不用额外请求 —— 它只是一段喂给模型的文本）
+      tab.persona = normPersona(get('persona'));
+      form.isNew = false;                   // 配好了，取消键回到普通语义（不再删标签）
+      this._markDirty(tab);                 // 立刻落盘：别等到说过话才存，白填一遍太亏
+
+      // 「自动」= 让**刚配好的这个模型**自己挑一个形象。放在这里（验证通过之后、收起表单之前）
+      // 是因为：① 挑不挑得出来取决于这份配置真的能用；② 状态行还开着，结果看得见。
+      // 只有一个包时不必问 —— 没得挑，浪费一次请求。
+      let pickErr = '';
+      if (want === 'auto') {
+        const cands = this._artCands();
+        if (cands.length > 1) {
+          say('ui.agent.form.pickArt');
+          let pr = null;
+          try { pr = await pickArt({ ...cfg, packs: cands }); } catch (e) { pr = { ok: false, error: String(e.message) }; }
+          if (pr && pr.ok) tab.charpackPicked = normArtPick(pr.id);
+          else pickErr = (pr && pr.error) || t('ui.shell.unknownError');
+          this._markDirty(tab);              // 挑出来了立刻存 —— 别等下次说话
+        }
+      }
+      if (this.onArtChange) this.onArtChange();   // 立绘跟着当前对话换（选的是别的对话也不亏，幂等）
+      form.busy = false;
+      form.bad = false;
+      // via / pname 是**片段**：由各自的语言包拼进整句（别的语言语序不同，不能按片段硬拼）
+      const via = res.via === 'models' ? t('ui.agent.form.modelChecked') : '';
+      const pname = res.provider ? ` · ${providerLabel(res.provider)}` : '';
+      // 挑形象失败**不影响保存**：配置本身是好的，形象退回默认包（自动但没挑到 → artId() 为空）
+      if (pickErr) say('ui.agent.form.pickArtFail', { err: pickErr });
+      else say('ui.agent.verifyOk', { ms: res.ms, via, pname });
+      setTimeout(() => {
+        // 还在这一份表单上（中途没被别的表单顶掉、也没被删）才收起来
+        if (this.form !== form) return;
+        this.configClose();
+        // 收尾那句系统提示进**这个对话**：期间可能切走过，别写进别人身上
+        if (tab) tab.pushT('info', 'ui.agent.llmOn', { model: cfg.model });
+        // 「自动」挑出来了就在对话里留一句：状态行一会儿就没了，
+        // 但"这个形象是它自己挑的 / 挑的是哪个"是该看得见、也留得住的事。
+        if (tab && want === 'auto' && tab.charpackPicked) {
+          tab.pushT('info', 'ui.agent.artAuto', { id: tab.charpackPicked, model: cfg.model });
+        }
+      }, 900);
+    } catch (e) { form.busy = false; form.bad = true; say('ui.agent.form.saveError', { err: e.message }); }
   }
 
   // 鼠标点击配置框：命中字段→聚焦该字段；命中保存/取消→执行对应动作
   configMouse(c) {
-    const h = this._cfg;
-    if (!h) return false;
+    const h = this._cfgHits;
+    const form = this.form;
+    if (!h || !form) return false;
     for (const fd of h.fields) {
       if (c.y === fd.y && c.x >= fd.x0 && c.x < fd.x1) {
-        this.form.idx = this.form.fields.findIndex((f) => f.key === fd.key);
+        form.idx = form.fields.findIndex((f) => f.key === fd.key);
         // 循环字段：点 ‹ 往回翻、点 › 往后翻，点中间的文字只是聚焦
         // cols 只在文本字段上有值（循环字段没有 text 区，见 drawConfig）
         if (fd.cycle) {
@@ -793,15 +1224,14 @@ export class AgentPanel {
           // 点在字符起始列 → 光标落在它**前面**；点在后半格（宽字符）→ 落在它后面
           let i = 0;
           for (let k = 0; k < fd.cols.length; k++) { if (fd.cols[k] < rel) i = k + 1; else break; }
-          this.form.caret = Math.min(fd.val.length, fd.off + i);
+          form.caret = Math.min(fd.val.length, fd.off + i);
         }
         return true;
       }
     }
     if (c.y === h.save.y && c.x >= h.save.x0 && c.x < h.save.x1) { this.configSave(); return true; }
     if (c.y === h.cancel.y && c.x >= h.cancel.x0 && c.x < h.cancel.x1) {
-      if (this.llmConfigured) this.configClose();
-      else this.setMsg('ui.agent.form.cantCancel');
+      this.configCancel();
       return true;
     }
     return false;
@@ -933,13 +1363,14 @@ export class AgentPanel {
     g.text(cx - Math.floor(g.strWidth(title) / 2), midY - 6, title, T.accent, T.panel);
     g.text(x + 2, midY - 5, '─'.repeat(Math.max(0, iw - 4)), T.line, T.panel);
 
-    const f = this.form.fields;
-    // 标签列宽取最长标签（'心情语句' 比 '协议' 宽），箭头与输入框才不会各歪一列
-    const labelW = Math.max(1, ...f.map((x) => g.strWidth(t(x.labelKey))));
+    const form = this.form;
+    if (!form) return;
+    const fields = form.fields;
+    const labelW = Math.max(1, ...fields.map((x) => g.strWidth(t(x.labelKey))));
     const rowHits = [];
-    for (let k = 0; k < f.length; k++) {
-      const field = f[k];
-      const active = this.form.idx === k;
+    for (let k = 0; k < fields.length; k++) {
+      const field = fields[k];
+      const active = form.idx === k;
       let disp = field.value;
       let txtStart = 0, txtEnd = 0, off0 = 0;       // 文本区起止列（点击命中/定位光标）；off0 = 长值的滚动偏移
       let cols = null;                              // 每个可见字符的起始列（只有文本字段有）
@@ -967,7 +1398,7 @@ export class AgentPanel {
         const tx0 = x + 2 + 2 + labelW;        // 行 = 光标(1) + 空格(1) + 标签列
         const avail = Math.max(1, r.x + r.w - 1 - tx0 - 1);
         // 值长过一行就让可视窗口跟着光标滑，光标落在哪一列由 caret 决定
-        const c = active ? Math.max(0, Math.min(disp.length, this.form.caret)) : 0;
+        const c = active ? Math.max(0, Math.min(disp.length, form.caret)) : 0;
         const off = Math.max(0, c - avail + 1);
         g.text(x + 2, midY - 3 + k, `${active ? '▸' : ' '} ${lbl}`, active ? T.accent : T.text, T.panel);
         const vis = disp.slice(off, off + avail);
@@ -988,22 +1419,22 @@ export class AgentPanel {
     }
 
     // 按钮紧跟最后一个字段（字段数量会变，别写死在 midY+1，否则第 5 行会压到按钮上）
-    const bY = midY - 3 + f.length;
-    const b = f.length;
-    const saveLabel = this.form.busy ? t('ui.agent.btn.testing') : t('ui.agent.btn.save');
+    const bY = midY - 3 + fields.length;
+    const b = fields.length;
+    const saveLabel = form.busy ? t('ui.agent.btn.testing') : t('ui.agent.btn.save');
     const cancelLabel = t('ui.agent.btn.cancel');
-    this._btn(g, T, x + 2, bY, saveLabel, this.form.idx === b);
-    this._btn(g, T, x + 2 + 14, bY, cancelLabel, this.form.idx === b + 1);
+    this._btn(g, T, x + 2, bY, saveLabel, form.idx === b);
+    this._btn(g, T, x + 2 + 14, bY, cancelLabel, form.idx === b + 1);
 
     // 提示可能很长（比如可用模型清单）：折两行、超出面板宽度截断，别溢到邻面板
     const msgW = Math.max(4, iw - 4);
-    const msgText = this.form.msgKey ? t(this.form.msgKey, this.form.msgArgs) : '';
+    const msgText = form.msgKey ? t(form.msgKey, form.msgArgs) : '';
     const mLines = wrapText(g, msgText, msgW).slice(0, 2);
-    const mColor = this.form.bad ? T.err : T.warn;
+    const mColor = form.bad ? T.err : T.warn;
     for (let i = 0; i < mLines.length; i++) g.text(x + 2, bY + 2 + i, mLines[i], mColor, T.panel);
     g.text(x + 2, bY + 4, t('ui.agent.form.keys'), T.dim, T.panel);
     // 记录可点击区域（网格坐标），供鼠标点击命中
-    this._cfg = {
+    this._cfgHits = {
       fields: rowHits.map((h, k) => ({ ...h, y: midY - 3 + k, x0: x + 1, x1: r.x + r.w - 1 })),
       save: { y: bY, x0: x + 2, x1: x + 2 + g.strWidth(saveLabel) },
       cancel: { y: bY, x0: x + 2 + 14, x1: x + 2 + 14 + g.strWidth(cancelLabel) },
@@ -1038,15 +1469,31 @@ function clampTitle(s) {
 const MOOD_TAG_RE = /\[?\[\s*(?:mood|心情|情绪|emo|emotion|state|status)\s*[:：=][\s\S]*?(?:\]\]|\]|$)/gi;
 function stripMood(s) { return String(s || '').replace(MOOD_TAG_RE, '').trim(); }
 
-// 「心情语句 显示/隐藏」是纯本地偏好（跟后端无关），记在 localStorage 里跨会话保留。
-// WebView2 里 localStorage 未必可用（隐私模式/异常状态），所以读写都要裹 try。
-const MOOD_PREF_KEY = 'ponko.moodTags';
-// 默认隐藏：只有用户显式选过「显示」才显示（记不住时回到隐藏，不给正文添乱）
-function readMoodPref() {
-  try { return localStorage.getItem(MOOD_PREF_KEY) === 'show'; } catch (e) { return false; }
+// 形象字段的值：'auto' 或素材包 id。只认这两种形状 ——
+// 存档里可能带着手改过的怪值（空串、别的类型、"../" 之类），一律收敛成 'auto'，
+// 免得把脏值一路带到 /api/charpacks 的匹配上。后端 writeConv 也做同样的规范化，两边不会各说各话。
+const ART_ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
+function normArt(v) {
+  const s = String(v === undefined || v === null ? '' : v).trim();
+  if (s === 'auto') return 'auto';
+  return ART_ID_RE.test(s) ? s : 'auto';
 }
-function writeMoodPref(show) {
-  try { localStorage.setItem(MOOD_PREF_KEY, show ? 'show' : 'hide'); } catch (e) { /* 记不住就算了 */ }
+/**
+ * 「自动」时模型挑出来的那个包：脏值一律收敛成 **空串**（不是 'auto'）——
+ * 空串的含义是"还没挑到"，artId() 会据此让主装配回退默认包；
+ * 收敛成 'auto' 反而会造出"包名叫 auto"的假象。
+ */
+function normArtPick(v) {
+  const s = String(v === undefined || v === null ? '' : v).trim();
+  return ART_ID_RE.test(s) ? s : '';
+}
+
+// 性格字段：只认这五个 id，脏值一律回落 default。
+// 跟形象不同，这里**没有「自动」**：性格不是让别人替你挑的东西，只有"没设置"（= default）。
+// 后端 normPersona 做同样的收敛，两边不会各说各话。
+function normPersona(v) {
+  const s = String(v === undefined || v === null ? '' : v).trim().toLowerCase();
+  return PERSONA_KEYS.includes(s) ? s : 'default';
 }
 
 // 协议字段：只认这三个值，脏值一律回落 auto（后端也做同样的规范化，两边不会各说各话）
@@ -1058,6 +1505,16 @@ function normProvider(p) {
 function providerLabel(v) {
   const k = normProvider(v);
   return t(k === 'anthropic' ? 'ui.agent.opt.anthropic' : (k === 'openai' ? 'ui.agent.opt.openai' : 'ui.agent.opt.auto'));
+}
+
+/**
+ * 存档里带回来的标签色号：合法的（非负整数 + 在色板内）才认，否则 null。
+ * 跟 normArtPick 一个道理 —— 脏值不能收敛成某个"看起来合理"的色号，
+ * 那会凭空把两个对话染成同一个颜色。
+ */
+function normCi(v) {
+  const n = Number(v);
+  return (Number.isInteger(n) && n >= 0 && n < TAB_COLORS.length) ? n : null;
 }
 
 /** 循环字段当前值的显示名（协议、心情语句都走这里）—— 候选项第二项存的是语言包 key，现取现翻 */

@@ -4,7 +4,7 @@ English version — [中文版 / Chinese version](README.md)
 
 > A full-screen, borderless, eDEX-UI-style HUD desktop application for Windows. The interface is rendered frame by frame on a hand-drawn character grid, with no dependency on application frameworks such as Electron.
 
-**Windows** · **Zero dependencies in the frontend / backend** · **MIT** · UI languages `zh-cn` / `en` / `ja`
+**Windows** · **Zero dependencies in the frontend / backend** · **MIT** · UI languages `zh-cn` / `en` / `ja` / `ru` / `tlh`
 
 ## Table of Contents
 
@@ -32,17 +32,56 @@ English version — [中文版 / Chinese version](README.md)
 
   </details>
 - **Real terminal** — a ConPTY-backed PTY with keys passed straight through (modelled on eDEX-UI / xterm.js); fully interactive programs such as vim / python / htop all run, Chinese IME included; multiple tabs, each an independent session
-- **Agent chat** — connects to an OpenAI-compatible endpoint with streamed output. **The top-right corner of the panel shows the model id actually connected right now** (read from the backend config, never hardcoded); with nothing attached it reads `local · no LLM`
+- **Agent chat** — connects to an OpenAI-compatible endpoint with streamed output. **Each conversation keeps its own LLM config** (pressing "+" pre-fills the form from the conversation you were looking at when you pressed it — empty if that one has no config; editing one never touches the others); the top-right corner of the panel shows **that conversation's** actual model id (never hardcoded); with nothing attached it reads `local · no LLM`. In the input box **Enter inserts a newline and `Ctrl+Enter` sends** (either Ctrl works; `Alt+Enter` sends too — handy when an IME has claimed the right Ctrl)
   <details><summary>How conversations are archived and deleted (expand)</summary>
 
   Multiple tabs correspond to multiple conversations, auto-saved to `run/conversations/` and restored verbatim
-  after a restart; typing `/del chat` + `Ctrl+Enter` in the input box first raises a confirmation line, and
-  only Enter actually closes the current conversation (archive included). When no LLM is configured, a config
-  dialog appears inline.
+  after a restart. Each tab's **colour is saved too** (as an index in its archive), so "the blue one is the
+  one I was just asking in" still holds after a restart — the palette is not reshuffled just because the
+  restore order is "most recently touched last" (fixed 2026-10-15). **Every tab that is open gets saved** — even one with no LLM configured and nothing said
+  in it — so "open two unconfigured tabs, close, reopen" still gives you two: the tab count never quietly
+  shrinks (an empty conversation is stored with an empty title, never a UI string). Typing `/del chat` +
+  `Ctrl+Enter` in the input box first raises a confirmation line, and
+  only Enter actually closes the current conversation (archive included). A conversation without an LLM gets
+  an inline config dialog; pressing **+** opens it too, **pre-filled from the conversation you were looking
+  at when you pressed it** (blank if that one has no config yet) — edits there affect only that conversation. So switching model or gateway means opening a new
+  conversation, not rewriting a global setting. The form belongs to the **conversation**: tab away half-way
+  through and come back — it is exactly as you left it; only pressing Cancel undoes a brand-new conversation
+  (tab included). A conversation counts as configured only **after you save**.
 
   </details>
+- **Character** — the "character" row of the config form decides which character pack the right-hand panel draws:
+  **auto** or any saved pack (`characters/<id>`). **The character is per conversation too** — switch tabs and the
+  character switches with it. With **auto**, the model you just configured is handed the candidate list and picks
+  one itself (it answers with an id; if it will not, the failure is reported and the default pack is used —
+  **the config is still saved**). The pick is recorded in the conversation (`character: <id> (picked by <model>)`)
+  and sticks across restarts
+- **Personality** — the "personality" row of the same form (natural / tsundere / peppy / sarcastic / gentle),
+  also **per conversation** and saved with it. It is the **persona handed to the model** and shapes how it
+  expresses emotion: "natural" adds nothing extra (the prompt already writes it as a character with moods),
+  the other four each bring their own tone and reactions
 - **Live geography globe** — positioned from real IP / DNS data, a character-dot sphere projection with an auto marquee
-- **Mood character** — a block-character animated avatar whose mood is driven autonomously by `[[mood:STATE|face:...]]` markers in the agent's replies
+- **Mood character** — the artwork is either a **dot-matrix image** (`src/*.png`, drawn straight onto the
+  canvas, bypassing the character grid, then re-sampled into square dots) or a **block-character animation**
+  (`frames/*.json`, the fallback when a pack has no hi-res art); the pack decides which one is used. The
+  panel shows the character name in its top-left corner, and when the character changes the **old portrait stays
+  on screen** until the new one is fully ready (no blank flash). Mood is driven autonomously by
+  `[[mood:STATE|face:...]]` markers in the agent's replies (the marker itself is never displayed).
+  **Emotions have memory and momentum**: every request hands the model "how you feel right now" (what you felt
+  a moment ago, the line you were thinking, how long it has lasted), so it carries the mood forward instead of
+  re-deriving it each turn — upset one turn does not become indifferent the next; it only settles once soothed.
+  **Mood is per conversation** (2026-10-17): a new conversation starts idle and does not inherit the previous
+  one's temper, tabs never bleed into each other — a background conversation's output cannot recolour the
+  foreground, and each conversation's model only receives *its own* "how you feel right now".
+  **Reopening looks exactly like it did when you quit**: the current mood (colour value, portrait face, the
+  agent's own line, and its source) travels with the conversation file (`run/conversations/<id>.json`, `mood`
+  field) and is restored per conversation on the next launch — so it is still there even after a while away
+  (fixed 2026-10-15). **No state is folded on restore**, including `'stream'` (what the prompt emits for
+  "praised / excited"): whatever it was when you quit is exactly what you get on reopen (fixed 2026-10-18).
+  **Only the agent changes the mood** (2026-10-17): there is no "two quiet minutes → doze off" fallback, and a
+  declared mood does not expire back to idle on its own — it stays until the agent speaks again. The program only
+  touches it in three cases: a new conversation starts idle, a launch restores the mood the agent itself declared,
+  and the `?mood=` debug bypass
 - **Native window** — pywebview + WebView2, own taskbar identity, own icon, single instance
 - **Dependency-free backend** — implemented purely on the Node standard library, with no third-party packages
 
@@ -103,7 +142,7 @@ flowchart LR
 | Source | Written by | What it records |
 | --- | --- | --- |
 | `host` | `native_host.py` | single-instance mutex, real `node.exe` path and `node -v`, backend pid & port, taskbar identity, pywebview version, window size, **how long the window took to show**, real port-handshake timing |
-| `node` / `llm` / `pack` / `pty` / `conv` / `sys` / `net` | `server/server.js` | Node & platform versions, whether an LLM is configured (**the key is never echoed**), asset-pack / face / frame counts and sizes scanned live, the interpreter found by actually running `python -V`, system & disk state, saved conversation count, listening port, geolocation result |
+| `node` / `llm` / `pack` / `pty` / `conv` / `sys` / `net` | `server/server.js` | Node & platform versions, whether any conversation has an LLM attached — found by **scanning the conversation archives** (only host / model / protocol are reported, **the key is never echoed**), asset-pack / face / frame counts and sizes scanned live, the interpreter found by actually running `python -V`, system & disk state, saved conversation count, listening port, geolocation result |
 | `ui` | the page itself | canvas pixels & dpr, cell size measured off the monospace font, real render engine (UA), asset-pack load, restored conversations, real per-endpoint round trips, full redraw timing of frame 3 |
 
 The host and the backend append to **the same file** `run/boot.log` (the host truncates it at every boot,
@@ -122,14 +161,21 @@ line-by-line exit). Only once the fade finishes does the HUD's unfold animation 
   host nor the backend needs to know any language, yet every line of the boot screen can follow the language
   pack — those lines hit disk before the page ever obtains a language pack.
 - Debugging: `?boot=0` skips the boot screen, `?bootpace=N` adjusts the replay budget (milliseconds),
-  `?lang=en` switches language temporarily.
+  `?lang=en` switches language temporarily, `?art=photo` puts the portrait back to a plain blit
+  (dot-matrix is the default).
 - **Language**: UI strings (`ui.*`) and the boot screen (including the host / backend lines and the bottom
   progress bar) both follow the **language pack** — whatever the pack provides is used, and anything missing
   falls back to English (`en.js` is the shared fallback for `ui.*` and `boot.*` alike; missing entries fall to
   English rather than Chinese, so the screen is never half-and-half). `zh-cn.js` covers both sections in full,
   so under Simplified Chinese the whole UI and boot screen are Chinese; add the same keys to another pack and
   it gets the same treatment. **`ja.js` fills in `ui.*` only** (`boot.*` deliberately left empty) → under
-  Japanese the UI is Japanese while the boot screen is English.
+  Japanese the UI is Japanese while the boot screen is English. **`ru.js` covers both sections in full**
+  (including the dozens of host / backend lines) → under Russian both the UI and the boot screen are Russian.
+  **`tlh.js` (Klingon) is complete too, and its text is written in the Klingon script (pIqaD, Private Use
+  Area from U+F8D0) rather than romanised Klingon** — no system font on Windows covers that range, so the
+  font ships with the app (`app/assets/fonts/pIqaD-qolqoS.ttf`, SIL OFL, unmodified) and is wired to the
+  canvas through the `@font-face` in `style.css` and the font stack in `grid.js`. Convert back and forth with
+  `node tools/piqad.mjs --roman/--piqad` instead of typing PUA code points by hand.
 - Regression: `node tools/test_boot.mjs` (every backend line recomputes against the live machine), `node tools/test_boot_ui.mjs` (layout, typing and closing fade, the language pack deciding the sentence), `node tools/test_i18n.mjs` (language boundaries: only `ui.*` / `boot.*` may enter the dictionary, the service and recognition layers must never import i18n, every event id the host / backend emits must exist in both packs, and `ui.*` must be *complete* in `zh-cn` and `ja` — miss one and that entry falls through to `en.js`, leaving a stray English word on screen), `node tools/test_readme.mjs` (the two READMEs must stay structurally identical), `python tools/test_boot_host.py` (lines the host writes parse back verbatim).
 - **When a behaviour changes, the language-pack strings describing it must be cleaned up too**: switching language has taken effect immediately since round 13, yet the reply still read "applies on next launch" — round 15 added a guard so that stale wording cannot return.
 
@@ -138,12 +184,13 @@ line-by-line exit). Only once the fade finishes does the HUD's unfold animation 
 ## Structure
 
 ```
-app/src/        frontend: grid character grid, vt terminal emulation, panels, boot.js self-check screen
-app/src/i18n/   language packs: index.js t() entry + zh-cn.js (Simplified Chinese, complete for ui.* and boot.*) + en.js (fallback for both: every entry missing from any pack lands here) + ja.js (Japanese UI; boot.* deliberately empty → falls to English)
+app/src/        frontend: grid character grid, dots portrait dot-matrix, vt terminal emulation, panels, boot.js self-check screen
+app/src/i18n/   language packs: index.js t() entry + zh-cn.js (Simplified Chinese, complete for ui.* and boot.*) + en.js (fallback for both: every entry missing from any pack lands here) + ja.js (Japanese UI; boot.* deliberately empty → falls to English) + ru.js (Russian, complete for ui.* and boot.*) + tlh.js (Klingon, complete for both, body text in pIqaD)
+  + assets/fonts/pIqaD-qolqoS.ttf (Klingon script font, SIL OFL, redistributed unmodified)
 server/         backend: server.js HTTP service, bootlog.js boot records, pty.js PTY management, ptybridge.py Windows ConPTY bridge
-characters/     character animation assets (.ans / .json)
+characters/     character assets (src/*.png artwork + frames/*.ans|json block frames)
 native_host.py  pywebview native window host
-run/            runtime artefacts (saved conversations, boot.log, host.log): git-ignored, **never committed**
+run/            runtime artefacts (saved conversations, ui-state.json UI state, boot.log, host.log): git-ignored, **never committed**
 ```
 
 Tab hotkeys are only `Ctrl+Shift+T` (new) and `Ctrl+Tab` / `Ctrl+Shift+Tab` (cycle), dispatched by
@@ -188,6 +235,14 @@ The SHELL panel has its own set of **built-in commands** (typed directly into th
 of the same name; only "the whole line is exactly `lang` or `lang <one word>`" is recognised — `lang a b` is sent
 to the shell as usual and input is never swallowed.
 
+**Tab completion** (pipe mode): when the input box **has content**, `Tab` completes — paths against this tab's
+**real working directory** (directories get a trailing `\`, so another `Tab` steps inside), and command names
+(from executables on `PATH`) at the start of a line or after `|`. With several candidates it first extends to
+their common prefix and lists the rest on screen; a letter or two more usually makes it unique. When the input
+box is **empty**, `Tab` keeps its old job (switching focus between SHELL and AGENT). In the real terminal `Tab`
+is passed straight through: `pty pwsh` / `pty python` completion is done by that program itself (it has far
+more authority than this panel does), and this project stays out of it.
+
 ---
 
 ## Notes
@@ -201,11 +256,13 @@ kinds are kept:
 - **Actions completed off-screen**: "copied N characters", "copy failed" — otherwise the result cannot be confirmed;
 - **Actions needing one more confirmation**: "click Exit once more to confirm", "quitting…".
 
-UI strings and code comments are in Chinese; the language-pack mechanism lives in `app/src/i18n/` (three packs
-today: Simplified Chinese, English, Japanese). Both `ui.*` (interface) and `boot.*` (boot log) are wired to the
+UI strings and code comments are in Chinese; the language-pack mechanism lives in `app/src/i18n/` (five packs
+today: Simplified Chinese, English, Japanese, Russian, Klingon). Both `ui.*` (interface) and `boot.*` (boot log) are wired to the
 packs: **whichever entry a pack is missing falls back to `en.js`** (English, not Chinese, so the screen is never
 half-and-half). `ja.js` translates the **UI strings** and leaves `boot.*` deliberately empty — so under Japanese
-the UI is Japanese while the boot screen is English. Switch language by typing `lang` in SHELL; the switchable
+the UI is Japanese while the boot screen is English; `ru.js` covers both sections, so under Russian both are
+Russian; `tlh.js` is complete as well but its text is the **Klingon script** (pIqaD) rather than a Latin
+transliteration, with the font shipped in `app/assets/fonts/` (SIL OFL). Switch language by typing `lang` in SHELL; the switchable
 ids are listed on the spot; `lang <id>` **retranslates the whole screen on the spot** (including lines that
 already scrolled past, the bottom hint, the config dialog — **no need to reopen the HUD**), and the preference
 is remembered in the browser (the next launch keeps it). Machine paths are hardcoded — after cloning, adjust
@@ -217,6 +274,79 @@ the directories in `native_host.py` and `app/src/main.js` to your own setup.
 
 [MIT](LICENSE) © 2026 visitor257
 
-`characters/ds-whale/` is a **placeholder character used during development**, generated programmatically by
-`tools/make_test_assets.py` (drawn from geometry, containing no third-party assets) and covered by the same MIT
-license. It will be replaced by the final character artwork — do not depend on it.
+`characters/ponko/` holds the **shipping character artwork**: the six images in `src/`
+(`idle / thinking / streaming / sleepy / angry / error`) map to the mood face tags, and `frames/` holds the
+block-character frames produced by `tools/charpack.py`.
+`angry` and `error` are a pair of opposite bad moods — the former is fire aimed **outward**
+(worked up, defiant), the latter is **inward** deflation (hurt, defeated); their themes are kept apart on
+purpose (hot orange-red vs a cooler pinkish red) so you can tell at a glance which one it is.
+
+The portrait has **two paths**, picked automatically per pack (the UI no longer labels which one is active):
+
+- **Dot-matrix blit**: if `src/<tag>.png` exists it is first rasterised to the panel
+  size with a contain fit, then **re-sampled into square dots** (`app/src/dots.js`) and painted straight
+  onto the panel, **bypassing the character grid**. Sampling takes a 2x2-pixel block at a time; the dot's
+  side follows that block's coverage (solid blocks fill the cell, silhouette blocks shrink to a small
+  square — a halftone edge), and its colour is the block's alpha-weighted average. Sampling and painting
+  happen once and are cached into an offscreen canvas, so each frame only blits a ready bitmap — the same
+  cost as drawing the image directly. The same slot is only 28x19 = 532 solid colour blocks as characters,
+  but 231x342 real pixels as an image. Launch with `?art=photo` for a **plain blit**.
+- **Block characters**: falls back to `frames/*.json` when the pack has no `src/`
+  image, or when the image fails to load.
+
+**Mood names belong to the character pack** (2026-10-17). What a mood is called on screen lives in
+that pack's own `frames/pack.json`, **not in the language files** — the name is part of the character
+and ships with its artwork, so a different pack simply names things its own way without touching
+any language file.
+
+```json
+"moods": {
+  "idle": { "frames": ["idle.ans"], "fps": 0, "loop": false,
+            "label": { "en": "idle", "zh-cn": "待机", "ja": "待機" } }
+}
+```
+
+- **`en` is required**; other languages are optional. If the language in use is missing, English is
+  shown; if even English is missing, the tag itself is shown (better to surface the id than to
+  substitute another language).
+- The mood name at the top of the panel and the "now …" line on the boot screen both use it.
+  `tools/charpack.py --emit-pack` seeds a new pack with `{"en": <tag>}`; add other languages by hand.
+- The bundled `ponko` pack **deliberately omits `ja`** (user, 2026-10-17: "Japanese needs no
+  translation, I want to use Japanese to test the default display") — so choosing 日本語 shows the
+  English mood names, which doubles as a live test of the fallback. Add a `label` entry to get
+  Japanese names; no code change needed.
+- `i18n` deliberately contains **no** `ui.mood.<state>` / `ui.theme.<state>` entries — don't add them
+  back. Having both would create two sources of truth (switch packs without switching language and
+  nobody can say which one should win).
+
+**Manual override is a debug feature and both of its on-screen traces are hidden by default**
+(`app/src/panels/char.js`): the row of clickable mood tags is not drawn (`SHOW_MOOD_CHIPS = false`),
+and the "manual override (debug)" line under the portrait is not written either (`MUTE_NOTES`).
+Flip those two switches during development to get them back. The capability is untouched:
+`?mood=think` and `Ctrl+M` still switch moods, and the status line still says "manual".
+
+**The old portrait never retreats early when the character changes (switching conversations).** The panel
+keeps a snapshot of what is on screen right now and only swaps it once the new persona is **fully ready**
+(image decoded *and* dots sampled) — so you never see "old portrait vanishes → blank while loading → new
+portrait appears". While waiting, the incoming image and its dot canvas are prepared off-frame
+(`preloadArt()` fans out every portrait in the pack, `grid.warmImg()` samples ahead); the swapping frame
+itself is just one `drawImage`.
+
+> Only the second path existed at first. Downscaling a painted illustration to 28 columns is bound to
+> blur, so `tools/make_ponko_geo.py` was written to draw a flat-shape figure instead. That proved the
+> blur came from the **character grid's resolution floor**, not from the drawing style — so the fix was
+> to take the portrait off the grid. The geometric version is kept in `characters/_archive/ponko-geo/`
+> and is no longer loaded.
+
+`characters/ponko/src` is produced from the original character art by `tools/_matte_pack.py`
+(connected-component background removal + watermark cleanup + waist crop); no third-party assets,
+covered by the same MIT license.
+
+`characters/_archive/` only keeps historical looks that are **no longer loaded** (the geometric
+`ponko-geo`, the earlier `ponko-ai`) — the scan runs one level under `characters/` and never walks in.
+The placeholder character used during development (`ds-whale`) is gone; to exercise the asset pipeline
+again, run `tools/make_test_assets.py`, which draws the five test portraits into the system temp
+directory and leaves nothing in the repo.
+
+(Every pack with a `frames/pack.json` under `characters/` is a candidate in the character list, picked
+per conversation.)

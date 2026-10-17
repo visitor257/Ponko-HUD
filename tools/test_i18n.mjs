@@ -15,10 +15,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { t, useLang, langOf, LANGS, availableLangs } from '../app/src/i18n/index.js';
+import { t, useLang, langOf, langName, LANGS, availableLangs } from '../app/src/i18n/index.js';
 import zhCn from '../app/src/i18n/zh-cn.js';
 import en from '../app/src/i18n/en.js';
 import ja from '../app/src/i18n/ja.js';
+import ru from '../app/src/i18n/ru.js';
+import tlh from '../app/src/i18n/tlh.js';
+import { isPiqadCode } from './piqad.mjs';
 import { MOOD_KEYS } from '../app/src/mood.js';
 import { EXIT_STATES } from '../app/src/exitbutton.js';
 
@@ -32,7 +35,11 @@ const chk = (name, ok, detail) => {
 };
 const CJK = /[\u4e00-\u9fff]/;
 const KANA = /[\u3040-\u30ff]/;   // 平假名 / 片假名 —— 用来断言"这条真的是日语"（不是中文也不是英文）
-const PACKS = [['zh-cn', zhCn], ['en', en], ['ja', ja]];
+const CYR = /[\u0400-\u04FF]/;    // 西里尔字母 —— 断言"这条真的是俄语"
+// 克林贡文 pIqaD：CSUR 注册在**私用区** U+F8D0…U+F8FF。用它当判据的意思是
+// "这一条真的是字形，不是罗马化"—— 写成罗马化（tlhIngan Hol）时这里一个都匹配不上。
+const PIQAD = /[\uF8D0-\uF8FF]/;
+const PACKS = [['zh-cn', zhCn], ['en', en], ['ja', ja], ['ru', ru], ['tlh', tlh]];
 /**
  * 抹掉注释，只留代码。两处都要用（扫 t() 的 key、扫残留中文）。
  * 块注释要**整文件**抹（跨行的 /* … *\/ 逐行抹不掉），替换成等量空白以保住行号；
@@ -157,18 +164,33 @@ const missing = [...used].filter(([k]) => !k.endsWith('.'))
 chk(`所有 t() 的静态 key 都在兜底包里（共 ${used.size} 条）`, missing.length === 0,
   JSON.stringify(missing.slice(0, 5).map(([k, f]) => `${k} @ ${f}`)));
 
-// 动态拼出来的 key（t('ui.mood.' + state) 这种）正则只能截到**前缀**。
-// 这里两件事：① 前缀只有这三组（多出来说明有人用字符串拼 key，那就不受守卫保护了）；
-//            ② 每组的取值范围（mood 状态 / 主题 / 退出三态）在两个包里都得有 key。
-const DYN_PREFIX = ['ui.mood.', 'ui.theme.', 'ui.exit.'];
+// 动态拼出来的 key（t('ui.exit.' + state) 这种）正则只能截到**前缀**。
+// 这里两件事：① 前缀只有这一组（多出来说明有人用字符串拼 key，那就不受守卫保护了）；
+//            ② 退出三态在两个包里都得有 key。
+//
+// 心情名字**已经不在**这个名单里了：2026-10-17 起它归角色素材包
+// （characters/<pack>/frames/pack.json 的 moods.<标签>.label），见下面第 7 节末尾那条反向守卫。
+const DYN_PREFIX = ['ui.exit.'];
 const dyn = [...used].filter(([k]) => k.endsWith('.'));
-chk('源码里"前缀式"的 key 只有 mood / theme / exit 三组（它们是可在别处枚举的枚举值）',
+chk('源码里"前缀式"的 key 只有 exit 这一组（它是可在别处枚举的枚举值）',
   dyn.every(([k]) => DYN_PREFIX.includes(k)), JSON.stringify(dyn));
 const dynMissing = [];
-for (const k of MOOD_KEYS) for (const pre of ['ui.mood.', 'ui.theme.']) if (en[pre + k] === undefined) dynMissing.push(pre + k);
 for (const s of EXIT_STATES) if (en['ui.exit.' + s] === undefined) dynMissing.push('ui.exit.' + s);
-chk(`mood / theme / exit 的每个取值在两个包里都有 key（${MOOD_KEYS.length}×2 + ${EXIT_STATES.length}）`,
+chk(`exit 的每个取值在两个包里都有 key（${EXIT_STATES.length}）`,
   dynMissing.length === 0, dynMissing.join(', '));
+
+// 反向守卫：**心情的名字不许搬回语言包**。
+// 名字一旦两边都有，就有两处真相 —— 换个角色包却不换语言时，会出现"面板写着待机、
+// 语言包说 idle"这种没人说得清的状态。要加语言，加在 pack.json 的 label 里。
+const backHome = [];
+for (const k of MOOD_KEYS) {
+  for (const pre of ['ui.mood.', 'ui.theme.']) {
+    for (const [id, dict] of PACKS) {
+      if (dict[pre + k] !== undefined) backHome.push(`${pre}${k} @ ${id}`);
+    }
+  }
+}
+chk('心情的名字没有被搬回语言包（它归角色素材包）', backHome.length === 0, backHome.join(', '));
 
 console.log('\n── 8. 边界：服务层与识别层不许 import i18n ──');
 const serverFiles = fs.readdirSync(path.join(ROOT, 'server'))
@@ -212,9 +234,16 @@ console.log('\n── 11. 前端每个模块都能当 ES module 解析（防模�
   for (const f of files) {
     const dst = path.join(tmp, path.basename(f) + '.mjs');
     fs.copyFileSync(f, dst);
-    try { execFileSync(process.execPath, ['--check', dst], { stdio: 'pipe' }); }
-    catch (e) {
-      const first = String((e.stderr || e.message || '')).split('\n').find((l) => l.trim()) || 'syntax error';
+    // 跑两遍：Windows 上**偶发**过一次 64/65 —— 刚复制出来的文件被杀毒/索引服务短暂占住，
+    // `--check` 以非零退出、stderr 里却没有 SyntaxError。重试一次能滤掉这种；真语法错误
+    // 重试还是错（所以不是"靠再试一次蒙过去"，只是把系统噪声和真问题分开）。
+    let err = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try { execFileSync(process.execPath, ['--check', dst], { stdio: 'pipe' }); err = null; break; }
+      catch (e) { err = e; }
+    }
+    if (err) {
+      const first = String((err.stderr || err.message || '')).split('\n').find((l) => l.trim()) || 'syntax error';
       bad.push(`${path.relative(ROOT, f)}: ${first.trim()}`);
     }
   }
@@ -248,17 +277,21 @@ chk('语言清单与语言包一一对应（availableLangs ↔ LANGS，不许各
 chk('每种语言都有自己的名字（不是把 id 原样亮出来）',
   availableLangs().every((l) => l.name && l.name !== l.id), JSON.stringify(availableLangs()));
 chk('清单里有 ja（`lang ja` 得能用）', availableLangs().some((l) => l.id === 'ja'), '');
+chk('清单里有 ru（`lang ru` 得能用）', availableLangs().some((l) => l.id === 'ru'), '');
+chk('清单里有 tlh（`lang tlh` 得能用）', availableLangs().some((l) => l.id === 'tlh'), '');
+chk('tlh 的名字是克林贡文字形（不是 "tlhIngan Hol" 这种罗马化）',
+  PIQAD.test(langName('tlh')) && !/[A-Za-z]/.test(langName('tlh')), JSON.stringify(langName('tlh')));
 
 // 用户 2026-10-13：切语言**当场整屏重译**（`onLangChange` 已接），所以回执里不许再写
 // "下次启动才生效"——那是 `onLangChange` 接上之前的事实，现在会误导人。
-const FORBID_STALE = /重启|下次启动|下次开机|再起動|次回起動|next (time|start|launch)|after (a )?restart/i;
-for (const [id, pack] of [['zh-cn', zhCn], ['en', en], ['ja', ja]]) {
+const FORBID_STALE = /重启|下次启动|下次开机|再起動|次回起動|next (time|start|launch)|after (a )?restart|перезапуск|следующ\w* запуск/i;
+for (const [id, pack] of [['zh-cn', zhCn], ['en', en], ['ja', ja], ['ru', ru], ['tlh', tlh]]) {
   const v = pack['ui.shell.langDone'] || '';
   chk(`${id} 的 langDone 不提"重启 / 下次启动才生效"`, !!v && !FORBID_STALE.test(v), v);
 }
-chk('langDone 明说"当场生效"（zh:当场 / en:right away / ja:すぐ）',
+chk('langDone 明说"当场生效"（zh:当场 / en:right away / ja:すぐ / ru:сразу）',
   /当场/.test(zhCn['ui.shell.langDone']) && /right away/i.test(en['ui.shell.langDone'])
-    && /すぐ/.test(ja['ui.shell.langDone']), '');
+    && /すぐ/.test(ja['ui.shell.langDone']) && /сразу/.test(ru['ui.shell.langDone']), '');
 
 console.log('\n── 13. 界面文案必须走语言包：app/src 的代码行里不许再留成品中文 ──');
 // 这条是"往字典里搬"这件事的反向守卫：搬完之后源码里就不该再有中文字符串了，
@@ -290,6 +323,115 @@ console.log('\n── 13. 界面文案必须走语言包：app/src 的代码行�
     bad.length === 0, bad.slice(0, 6).join(' | ') + (bad.length > 6 ? ` …共 ${bad.length} 处` : ''));
   chk('守卫本身有效（至少扫到过三类例外之一 —— 否则说明这条守卫可能空转）',
     ALLOW.length === 3, String(ALLOW.length));
+}
+
+console.log('\n── 14. 俄语包 ru.js：界面与启动日志都全量（用户 2026-10-17：「包括开屏日志」）──');
+// 与 ja 相反：ja 故意只翻 ui.*，ru 要两样都全。缺 boot.* 的话，俄语下开屏日志会整段落英文 ——
+// 那正是"半吊子"，比全英文更怪（第 2 条规则的道理）。
+{
+  const ruUiKeys = Object.keys(ru).filter((k) => k.startsWith('ui.')).sort();
+  const ruBootKeys = Object.keys(ru).filter((k) => k.startsWith('boot.')).sort();
+  const ruMissUi = enUiKeys.filter((k) => !(k in ru));
+  const ruMissBoot = Object.keys(en).filter((k) => k.startsWith('boot.') && !(k in ru));
+  chk(`ru.js 的 ui.* 是"全的"（${ruUiKeys.length} 条）—— 少一条，俄语界面上就冒出英文`,
+    ruMissUi.length === 0, `缺: ${ruMissUi.slice(0, 6).join(', ')}`);
+  chk(`ru.js 的 boot.* 也是"全的"（${ruBootKeys.length} 条）—— 少一条，开屏日志就混进英文`,
+    ruMissBoot.length === 0, `缺: ${ruMissBoot.slice(0, 6).join(', ')}`);
+  useLang('ru');
+  chk('俄语下界面文案真的是俄语（含西里尔字母）', CYR.test(t('ui.shell.welcome')), t('ui.shell.welcome'));
+  chk('俄语下开屏日志也是俄语（进度条 + 宿主那行）',
+    CYR.test(t('boot.progress')) && CYR.test(t('boot.host.started', { pid: 1, py: '3.14.4' })),
+    t('boot.host.started', { pid: 1, py: '3.14.4' }));
+  chk('俄语热键条里没有已下线的 [^M]（那条随调试功能一起删了）',
+    !/\^M/.test(t('ui.hotkeys')), t('ui.hotkeys'));
+  chk('俄语包的"未收录"标记也翻了（不是拿中文顶上）',
+    CYR.test(ru['ui.char.missing']), ru['ui.char.missing']);
+  useLang('zh-cn');
+  chk('切回简中后一切照旧', t('boot.progress') === '进度' && langOf() === 'zh-cn', t('boot.progress'));
+}
+
+console.log('\n── 15. 克林贡语包 tlh.js：正文是 pIqaD 字形，不是罗马化（用户 2026-10-17）──');
+// 用户原话：「然后还有克林贡语，包括开屏日志和角色心情。我要的是克林贡文，不是罗马拼音」。
+// 三件事：① 和 ru 一样两段都全量 ② 必须是**字形**（私用区）而不是拉丁转写
+// ③ 不许拿别的语言顶上（中文/西里尔/假名一个都不许剩）。
+{
+  const tMissUi = enUiKeys.filter((k) => !(k in tlh));
+  const tMissBoot = Object.keys(en).filter((k) => k.startsWith('boot.') && !(k in tlh));
+  chk(`tlh.js 的 ui.* 是"全的"（${Object.keys(tlh).filter((k) => k.startsWith('ui.')).length} 条）`,
+    tMissUi.length === 0, `缺: ${tMissUi.slice(0, 6).join(', ')}`);
+  chk(`tlh.js 的 boot.* 也是"全的"（${Object.keys(tlh).filter((k) => k.startsWith('boot.')).length} 条）—— 少一条，开屏日志就混进英文`,
+    tMissBoot.length === 0, `缺: ${tMissBoot.slice(0, 6).join(', ')}`);
+
+  useLang('tlh');
+  chk('克林贡语下界面文案是 pIqaD 字形（私用区），不是罗马化',
+    PIQAD.test(t('ui.shell.welcome')), t('ui.shell.welcome'));
+  // 挑几条**纯文案**的（不含产品名/键位这类原样保留的 ASCII）：整条都得是字形，
+  // 有一个拉丁字母就说明那句还是罗马化。
+  const pureTxt = ['ui.toast.noSelection', 'ui.shell.unknownError', 'ui.agent.newConv', 'ui.agent.aborted'];
+  chk('纯文案的那几条，整条都是克林贡文字形（没有罗马化残留）',
+    pureTxt.every((k) => PIQAD.test(t(k)) && !/[A-Za-z]/.test(t(k))),
+    JSON.stringify(pureTxt.filter((k) => /[A-Za-z]/.test(t(k))).map((k) => [k, t(k)])));
+  chk('克林贡语下开屏日志也是 pIqaD（进度条 + 宿主那行）',
+    PIQAD.test(t('boot.progress')) && PIQAD.test(t('boot.host.started', { pid: 1, py: '3.14.4' })),
+    t('boot.host.started', { pid: 1, py: '3.14.4' }));
+  // 纯技术标识的行（协议名、厂商名、单位）本来就一个克林贡词都没有，不硬翻 ——
+  // 但**必须在这里列出来**，逼着想清楚"这条为什么整条没字形"，而不是悄悄放过。
+  const TECH_ONLY = new Set([
+    'ui.shell.ptyError',        // "PTY · {msg}"：PTY 是技术名，消息体是外来的
+    'ui.agent.field.apiKey',    // "API Key"：字段名，照抄
+    'ui.agent.opt.anthropic',   // "Anthropic"：厂商名
+    'boot.ui.engine',           // "engine {ua} · core {cores}"：全是引擎标识
+    'boot.sys.gpu',             // " · GPU {util}%"：纯单位
+    'boot.host.pywebview',      // "pywebview {ver} · WebView2"：纯版本号与引擎名
+    'boot.node.runtime',        // "Node · platform arch · pid/ppid"：纯标识
+  ]);
+  const noGlyph = Object.entries(tlh).filter(([k, v]) => !PIQAD.test(v) && !TECH_ONLY.has(k));
+  chk(`每条都有字形（纯技术标识的 ${TECH_ONLY.size} 条除外，名单写在测试里）`,
+    noGlyph.length === 0, noGlyph.slice(0, 5).map(([k, v]) => `${k}=${v}`).join(' | '));
+  const tlhAll = Object.values(tlh).join(' ');
+  chk('tlh.js 里没有中文（不许拿中文顶上）', !CJK.test(tlhAll),
+    JSON.stringify(Object.entries(tlh).filter(([, v]) => CJK.test(v)).slice(0, 3)));
+  chk('tlh.js 里没有西里尔字母（不是从 ru 抄的）', !CYR.test(tlhAll),
+    JSON.stringify(Object.entries(tlh).filter(([, v]) => CYR.test(v)).slice(0, 3)));
+  chk('tlh.js 里没有日文假名', !KANA.test(tlhAll),
+    JSON.stringify(Object.entries(tlh).filter(([, v]) => KANA.test(v)).slice(0, 3)));
+
+  // 占位符必须和简中一一对应：字形是一条条转过去的，最容易在转的过程中吃掉 {name}
+  const ph2 = (s) => [...String(s).matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(',');
+  const tPhDiff = allKeys(zhCn).filter((k) => ph2(zhCn[k]) !== ph2(tlh[k]));
+  chk('tlh 的 {占位符} 与简中一一对应（转字形时不许吃掉参数）',
+    tPhDiff.length === 0,
+    tPhDiff.slice(0, 5).map((k) => `${k}: ${ph2(zhCn[k])} vs ${ph2(tlh[k])}`).join(' | '));
+
+  chk('tlh 的"未收录"标记也是字形（不是拿中文顶上）', PIQAD.test(tlh['ui.char.missing']), tlh['ui.char.missing']);
+
+  // 字形覆盖范围：字体（pIqaD qolqoS）只收录 26 字母 + 10 数字 + 逗号句号 + 帝国徽记。
+  // 私用区里剩下的码点（U+F8EA…U+F8F0 这些保留位）字体没有字形 —— 写进去就是豆腐块，
+  // 而且在字符串层面完全看不出来（码点是对的）。这条把它们挡在提交之前。
+  const uncovered = new Set();
+  for (const v of Object.values(tlh)) {
+    for (const ch of v) {
+      const cp = ch.codePointAt(0);
+      if (cp >= 0xF8D0 && cp <= 0xF8FF && !isPiqadCode(cp)) uncovered.add('U+' + cp.toString(16).toUpperCase());
+    }
+  }
+  chk('用到的字形都在字体覆盖范围内（保留位码点会画成豆腐块）',
+    uncovered.size === 0, [...uncovered].join(','));
+
+  // 用户这句要求里的"角色心情"：名字不在语言包，在角色包里，所以单独验一次
+  const packJson = JSON.parse(fs.readFileSync(path.join(ROOT, 'characters/ponko/frames/pack.json'), 'utf8'));
+  const moodTags = Object.keys(packJson.moods);
+  const badTlhLabel = moodTags.filter((k) => {
+    const lb = (packJson.moods[k] || {}).label || {};
+    return !PIQAD.test(lb.tlh || '');
+  });
+  chk(`角色包的 ${moodTags.length} 个心情都带 tlh 名字，且是字形（不是罗马化）`,
+    badTlhLabel.length === 0, badTlhLabel.join(','));
+  chk('角色包里 ja 仍然故意不写（"没翻就落英文"那条回退链的活样本）',
+    moodTags.every((k) => !(packJson.moods[k].label || {}).ja), JSON.stringify(packJson.moods[moodTags[0]].label));
+
+  useLang('zh-cn');
+  chk('切回简中后一切照旧', t('boot.progress') === '进度' && langOf() === 'zh-cn', t('boot.progress'));
 }
 
 console.log(`\n${results.length - failed}/${results.length} PASS`);

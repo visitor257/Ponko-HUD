@@ -22,7 +22,9 @@ export default {
   'ui.status.llmOff': 'local · LLM 未接続',
   'ui.hint.zoomOn': '▚ {panel} を拡大中 · 右下の 〼 で分割表示に戻す',
   'ui.hint.zoomOff': '▚ 焦点={focus} · ドラッグで選択 · 地球儀ドラッグ可 · 分割バー可 · 右下 ⛶ で拡大',
-  'ui.hotkeys': '[TAB]切替 [^⏎]送信/Enter改行 [ESC]選択解除/中断 [^⇧C]/[^C]コピー [^⇧T]新タブ [^Tab]タブ切替(焦点連動) [^M]気分 [^⇧Q]終了 [ホイール]スクロール',
+  // ホットキー行：`[^M]気分` は削除 —— Ctrl+M は 2026-10-17 にデバッグ機能と一緒に廃止
+  //（端末では ^M が Enter なので誤爆しやすい）。表示は実際の挙動に合わせる。
+  'ui.hotkeys': '[TAB]切替 [^⏎]送信/Enter改行 [ESC]選択解除/中断 [^⇧C]/[^C]コピー [^⇧T]新タブ [^Tab]タブ切替(焦点連動) [^⇧Q]終了 [ホイール]スクロール',
 
   // ── 下部の通知バー（toast）：一声かける価値があるときだけ出る
   'ui.toast.noSelection': '選択されたテキストがありません',
@@ -87,13 +89,26 @@ export default {
   'ui.agent.field.apiKey': 'API キー',
   'ui.agent.field.model': 'モデル名',
   'ui.agent.field.provider': 'プロトコル',
-  'ui.agent.field.moodTags': '気分タグ',
+  'ui.agent.field.charpack': 'キャラ',
+  'ui.agent.field.persona': '性格',
+  'ui.agent.opt.personaDefault': '自然体',
+  'ui.agent.opt.personaTsundere': 'ツンデレ',
+  'ui.agent.opt.personaGenki': '元気',
+  'ui.agent.opt.personaSarcastic': '毒舌',
+  'ui.agent.opt.personaGentle': '優しい',
   'ui.agent.opt.auto': '自動判別',
   'ui.agent.opt.openai': 'OpenAI 互換',
   'ui.agent.opt.anthropic': 'Anthropic',
-  'ui.agent.opt.show': '表示',
-  'ui.agent.opt.hide': '非表示',
+  // キャラ欄の「自動」：最初のパックを取るのではなく、設定済みのモデルに選ばせる
+  'ui.agent.opt.charpackAuto': '自動',
+  'ui.agent.form.pickArt': 'モデルにキャラを選ばせています…',
+  'ui.agent.form.pickArtFail': 'キャラを選べませんでした：{err} · 既定のものを使います（もう一度保存で再挑戦）',
+  'ui.agent.artAuto': 'キャラ：{id}（{model} が選びました）',
   'ui.agent.form.hint': 'アドレス / キー / モデルを入力して Enter で保存（先に接続を確認します）',
+  // 「+」で新規作成したときのフォーム：変更がこの会話だけに効く、という事実だけを書く。
+  // 「前の会話の設定をコピー済み」とは書かない —— 引き継ぐのは**「+」を押した時点で開いていた会話**
+  // （agent.js の _llmOfTab）。その会話が未設定なら空のフォームになる（2026-10-14 ユーザー指摘）。
+  'ui.agent.form.hintNew': '新しい会話 · 変更はこの会話だけに適用',
   'ui.agent.form.needBoth': 'アドレスとキーは必須です',
   'ui.agent.form.testing': '接続を確認しています…',
   'ui.agent.form.testFail': '接続に失敗しました：{err}',
@@ -101,7 +116,7 @@ export default {
   'ui.agent.verifyOk': '確認 OK（{ms}ms{via}{pname}）✓ 保存しました',
   'ui.agent.form.saveFail': '保存に失敗しました：項目が不足しています',
   'ui.agent.form.saveError': '保存エラー：{err}',
-  'ui.agent.form.cantCancel': '未設定のうちはキャンセルできません',
+  'ui.agent.form.hintSkip': 'LLM 未設定：この会話ではまだ送信できません · /llm で設定画面を再表示',
   'ui.agent.form.keys': 'TAB/↑↓ で移動 · ←→ で値変更 · Enter で保存 · マウスでも可',
   'ui.agent.btn.testing': '[ 確認中 ]',
   'ui.agent.btn.save': '[  保存  ]',
@@ -110,28 +125,18 @@ export default {
   'ui.agent.status.on': '接続済み',
 
   // ── MOOD / テーマ：状態名・発生元のタグ・フォールバックの説明
-  'ui.mood.idle': '待機',
-  'ui.mood.think': '思考',
-  'ui.mood.stream': '出力',
-  'ui.mood.sleepy': '眠い',
-  'ui.mood.error': 'エラー',
+  // 気分の**名前**（待機/思考/…）は言語パックに入れない —— キャラ素材パック側の持ち物
+  // （pack.json の moods.<tag>.label、mood.js の moodLabel()）。
   'ui.mood.srcLocal': 'ローカル既定',
   'ui.mood.srcManual': '手動',
   'ui.mood.waiting': 'agent の引き継ぎ待ち',
   'ui.mood.manualOverride': '手動上書き（デバッグ）',
-  'ui.mood.staleAgent': '（ローカル）agent が気分を更新しなくなりました',
-  'ui.mood.quiet': '（ローカル）長い間 agent の動きがありません',
-  'ui.theme.idle': '穏やか · 待機',
-  'ui.theme.think': '集中 · 思考',
-  'ui.theme.stream': '高揚 · 出力',
-  'ui.theme.sleepy': '眠気 · 低電力',
-  'ui.theme.error': '沈滞 · エラー',
 
-  // ── CHAR パネル：枠のスタイル名 / 表情の未収録マーク / 履歴の見出し
+  // ── CHAR パネル：表情の未収録マーク / 履歴の見出し
   //    （'loading…'、'mood N / 100' は元から英語なので辞書に入れない）
-  'ui.char.style': 'ブロック文字',
+  //    右上の描画方式ラベル（旧 ui.char.style*）は 2026-10-15 に削除。
   'ui.char.missing': ' ✗未収録',
-  'ui.char.history': '気分の履歴',
+  // 'ui.char.history' は 2026-10-17 にスパークラインごと削除。
 
   // ── GLOBE パネル：ステータス行と凡例（IP / 都市名は**データ**なので辞書に入れず、翻訳もしない）
   'ui.globe.decor': '装飾',

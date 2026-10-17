@@ -18,14 +18,48 @@
 // face 是开放词汇（用户自己起名），state 是封闭枚举（要和主题对应）。
 
 // 内部状态枚举（封闭）
+//
+// ⚠ 加一个 state 不止改这里 —— 见下面「加/删一个 state 要动哪些地方」那份清单。
 const STATES = {
   idle:   { label: '待机', hint: '空闲等待，或已经给出结论、心里有底' },
   think:  { label: '思考', hint: '正在推理 / 分析 / 检索，还没有结论' },
   stream: { label: '输出', hint: '正在产出内容、逐字输出' },
   sleepy: { label: '瞌睡', hint: '长时间没被唤起，低功耗待机' },
-  error:  { label: '出错', hint: '失败 / 卡住 / 受挫，或情绪低落（委屈、被否定、不高兴）' },
+  // angry 与 error 是一对**方向相反**的坏心情（2026-10-17 用户加了第 6 张立绘后拆出来的）：
+  //   angry = 向外，带着劲儿：生气、上火、被惹到、不服
+  //   error = 向内，蔫下去：委屈、沮丧、受挫、被否定
+  // 混在一起的话，模型写"生气"和写"委屈"会落到同一个状态上，那张生气脸永远用不上。
+  angry:  { label: '生气', hint: '被惹到了 / 上火 / 不服气 —— 还带着脾气的火气（对外）' },
+  error:  { label: '出错', hint: '失败 / 卡住 / 受挫，或情绪低落（委屈、沮丧、被否定）' },
 };
 const STATE_KEYS = Object.keys(STATES);
+
+// ── 加 / 删一个 state 要动哪些地方（2026-10-17 加 angry 时踩了一遍，记下来）──
+//
+// 前后端各有一份"封闭枚举"，**没有**共用常量表（浏览器 vs CommonJS），所以必须成对改：
+//   后端 · 本文件
+//     ① STATES（label + hint）—— hint 会被 moodBriefing 注入 system，写成"模型的自我描述"
+//     ② STATE_ALIAS —— 模型直接拿感受当 state 写时要接住（情绪词没接住 = 标记被静默吃掉）
+//     ③ GUESS_RULES —— 模型自创 state 时的猜测；同族词若两边都收，**顺序决定归属**
+//     ④ buildSystemPrompt 里那份 STATE 清单与触发规则（硬编码的，不会自动跟着 STATES 变）
+//   后端 · server/server.js
+//     ⑤ UI_MOOD_STATES 自动跟 STATE_KEYS 走 —— 不用改（但这正是"别只用后端枚举"的理由）
+//   前端
+//     ⑥ app/src/mood.js MOOD_STATES（base = 心情条目标高度；高唤醒的状态给高值）
+//     ⑦ app/src/theme.js MOODS（accent / land / glow —— 忘了加会**静默**回落到 idle 配色）
+//     ⑧ app/src/panels/char.js 的表情标签（已改成从 MOOD_KEYS 取，不再手写数组）
+//     ⑨ **心情的名字不在语言包里**（2026-10-17 起）—— 它归角色素材包：
+//        characters/<pack>/frames/pack.json 的 moods.<标签>.label（英文必填，其余选填）。
+//        所以 i18n 那份清单**不用动**，倒是 pack.json 里得给新 state 补一条 label。
+//   素材 / 文档 / 测试
+//     ⑩ characters/<pack>/：src/<state>.png + frames/<state>.json|.ans + pack.json 的 moods
+//     ⑪ README.md / README.en.md 里那份心情清单
+//     ⑫ tools/_verify_charpack.mjs 的 STATES / EXPECT_TAG / 各处"5 个表情"计数
+//     ⑬ tools/test_mood_strip.mjs 补情绪词用例；tools/test_uistate.mjs 与 test_i18n.mjs
+//        的守卫是自动跟着枚举走的，不用改（但还是跑一遍确认）
+//
+// 判断有没有漏：跑 `node tools/test_uistate.mjs`（前后端枚举一致性）+
+// `node tools/test_i18n.mjs`（三份语言包齐不齐）+ `node tools/_verify_charpack.mjs`（真页面）。
 
 // agent 口误时的别名收敛（不影响合法 face）
 const STATE_ALIAS = {
@@ -44,13 +78,21 @@ const STATE_ALIAS = {
   sleep: 'sleepy', asleep: 'sleepy', 瞌睡: 'sleepy', dozing: 'sleepy', bored: 'sleepy',
   sleepy: 'sleepy', tired: 'sleepy', 困: 'sleepy', 困倦: 'sleepy', 无聊: 'sleepy',
   摸鱼: 'sleepy', 走神: 'sleepy', 被晾: 'sleepy',
-  // 沮丧/委屈/不爽（被骂、被否定 → error）
+  // 生气 / 上火（向外的火气）→ angry
+  // 2026-10-17 从 error 里拆出来的：以前这些词全落 error，于是"生气"和"委屈"共用一个状态，
+  // 后加的生气立绘永远轮不到。骂人的话两种反应都真实 —— 所以被骂/挨骂**留在 error**（第一反应多是委屈），
+  // 要生气得模型自己写"生气/不爽"。
+  angry: 'angry', 生气: 'angry', 愤怒: 'angry', 火大: 'angry', 恼火: 'angry',
+  暴怒: 'angry', 发火: 'angry', 发飙: 'angry', 气死: 'angry', 上火: 'angry', 不爽: 'angry',
+  烦躁: 'angry', 烦: 'angry', 讨厌: 'angry', 气: 'angry',
+  mad: 'angry', annoyed: 'angry', upset: 'angry', irritated: 'angry', furious: 'angry', rage: 'angry',
+  // 沮丧/委屈/低落（往心里去）→ error
   fail: 'error', failed: 'error', panic: 'error', worried: 'error', sad: 'error',
-  出错: 'error', 失败: 'error', frustrated: 'error', angry: 'error', upset: 'error',
-  委屈: 'error', 难过: 'error', 伤心: 'error', 不爽: 'error', 生气: 'error', 愤怒: 'error',
+  出错: 'error', 失败: 'error', frustrated: 'error',
+  委屈: 'error', 难过: 'error', 伤心: 'error',
   沮丧: 'error', 受挫: 'error', 被骂: 'error', 挨骂: 'error', 低落: 'error', 失望: 'error',
-  无奈: 'error', 烦躁: 'error', 烦: 'error', 讨厌: 'error', 受伤: 'error', hurt: 'error',
-  mad: 'error', annoyed: 'error', gloomy: 'error', depressed: 'error',
+  无奈: 'error', 受伤: 'error', hurt: 'error',
+  gloomy: 'error', depressed: 'error',
   confused: 'think',
 };
 
@@ -64,6 +106,46 @@ const KEY_ALIAS = {
 
 const ALIAS_FACE_TO_STATE = null; // face 不反推 state，保持二者正交
 
+// ───────────────────────── 性格 ─────────────────────────
+//
+// 2026-10-15 用户："要让 llm 的情绪更拟人……简单来说就是要像具有情感那样"，
+// 并明确选择「配置时设置」—— 所以性格**不写死**，它是配置框里的一栏（跟"形象"同一层，
+// 随对话存档走，见 app/src/panels/agent.js 的 _personaOpts / configSave）。
+//
+// 这张表只放两样东西：合法 id、以及喂给模型的那段人设。界面上的选项名走语言包，
+// 由前端自己持有 —— 服务层不 import i18n（见 test_i18n.mjs 第 8 节）。
+//
+// 'default' 是**留白**：提示词本身已经写足"有情绪的人"这个底子，
+// 再往上套一层人设反而容易假（模型会去演标签，而不是表达情绪）。
+const PERSONAS = {
+  default: {
+    line: '',
+  },
+  tsundere: {
+    line: '傲娇：嘴硬心软。被夸会先嘴硬（"这算什么"），心里其实挺高兴 —— STATE 和 note 照实往上走，'
+      + '只是嘴上不承认；被否定会顶回去，其实很在意。关心用户时不肯直说，绕着弯儿讲。',
+  },
+  genki: {
+    line: '元气：话密、热情、容易激动。碰到有意思的东西立刻来劲（stream）；被数落会实打实地低落（error），'
+      + '不憋着；无聊了就直接喊困（sleepy）。起伏大，但恢复也快。',
+  },
+  sarcastic: {
+    line: '毒舌：语气淡淡的，冷不丁甩一句吐槽。不装热情、不硬凑情绪 —— 起伏不大，但每一档都很真，'
+      + '被夸最多"哼，算你有眼光"，被骂会冷淡地怼回去（error）。',
+  },
+  gentle: {
+    line: '温柔：耐心，会顾及用户的状态。很少闹脾气，情绪表达细腻 —— 多为 think / idle，'
+      + '真难过时也是安安静静的 error，不会大声抱怨。',
+  },
+};
+const PERSONA_KEYS = Object.keys(PERSONAS);
+
+/** 性格归一化：非法值 / 缺省一律回落 'default'（这一项没有"猜"的余地，也不该报错） */
+function normPersona(v) {
+  const k = String(v === undefined || v === null ? '' : v).trim().toLowerCase();
+  return PERSONAS[k] ? k : 'default';
+}
+
 function clamp01(n) { return Math.max(0, Math.min(1, Number(n) || 0)); }
 
 /** state 归一化：非法值返回 null（调用方决定是丢弃还是降级） */
@@ -74,6 +156,39 @@ function normState(s) {
   if (STATE_ALIAS[k]) return STATE_ALIAS[k];
   const hit = STATE_KEYS.find((x) => x === k.replace(/[^\w]/g, ''));
   return hit || null;
+}
+
+/**
+ * 一次"心情快照"（`Mood.snapshot()` 的形状）的落盘校验 —— 用在对**对话存档**的读写上。
+ *
+ * 跟上面的 normalize() 不是一回事：那个洗的是"agent 的声明"（note/until），这个洗的是
+ * **已生效的状态**（state/face/intensity/noteText/noteKey/source/value），因为前端要拿它
+ * 直接 restore 回屏幕（见 app/src/mood.js 的 restore）。
+ *
+ * 规矩跟界面状态存档一致：**宁可整条丢掉，也不猜**。state 不合法 → null（调用方当"没有心情"）。
+ * manual 一律折成 auto —— 调试旁路不许被存档粘住（2026-10-17 那条"手动·生气"的教训，
+ * 见 mood.js 的 snapshot）。
+ */
+function normMoodSnap(s) {
+  if (!s || typeof s !== 'object') return null;
+  const state = normState(s.state);
+  if (!state) return null;
+  const num = (v, lo, hi, dflt) => {
+    const n = Number(v);
+    return (Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : dflt);
+  };
+  const str = (v, max) => String(v === undefined || v === null ? '' : v).slice(0, max);
+  const noteKey = str(s.noteKey, 64);
+  const manual = s.source === 'manual' || noteKey === 'ui.mood.manualOverride';
+  return {
+    state,
+    face: s.face ? str(s.face, 24) : null,
+    intensity: num(s.intensity, 0, 1, 0.45),
+    noteText: manual ? '' : str(s.noteText, 120),
+    noteKey: manual ? '' : noteKey,
+    source: manual ? 'auto' : (s.source === 'agent' ? 'agent' : 'auto'),
+    value: num(s.value, 2, 100, 62),
+  };
 }
 
 /**
@@ -161,7 +276,9 @@ function findOpen(s) {
 const GUESS_RULES = [
   ['think',  /想|思考|推理|分析|检索|查|算|研究|犹豫|考虑|琢磨|推断|探究|盘算|思索|专注|专心|集中|疑惑|紧张|think|reason|analy|search|calcul|study|wonder|puzzl|confus|curious|focus|好奇/],
   ['stream', /说|输出|回答|讲|解释|写|表达|汇报|陈述|总结|介绍|补充|兴奋|来劲|开心|高兴|得意|自豪|激动|热情|被夸|generat|answer|reply|respond|speak|talk|explain|writ|output|stream|say|tell|excited|happy|glad|proud|cheer/],
-  ['error',  /错|失败|抱歉|异常|崩|危险|卡|坏|糟糕|崩溃|委屈|难过|伤心|不爽|生气|愤怒|沮丧|受挫|被骂|挨骂|低落|失望|无奈|烦|讨厌|受伤|error|fail|sorry|warn|bug|crash|bad|wrong|panic|afraid|sad|mad|angry|upset|hurt|annoy|gloom|depress|frustrat/],
+  // angry 必须排在 error **前面**：两边都收"气"字系词，先到先得。
+  ['angry',  /生气|愤怒|火大|恼火|暴怒|发火|发飙|气死|上火|不爽|烦躁|讨厌|气|angry|mad|furious|annoy|irritat|upset|rage/],
+  ['error',  /错|失败|抱歉|异常|崩|危险|卡|坏|糟糕|崩溃|委屈|难过|伤心|沮丧|受挫|被骂|挨骂|低落|失望|无奈|受伤|error|fail|sorry|warn|bug|crash|bad|wrong|panic|afraid|sad|hurt|gloom|depress|frustrat/],
   ['sleepy', /困|睡|无聊|闲|歇|乏|躺|摸鱼|发呆|走神|被晾|sleep|tired|bored|lazy|drows|doz/],
   ['idle',   /完成|结束|好了|待机|平静|淡定|满意|轻松|安心|稳了|搞定|成功|无事|放松|done|finish|complete|ok|calm|pleas|relax|satisf|success|fine/],
 ];
@@ -232,11 +349,56 @@ function maybeJsonLine(line) {
   return normalize(body.state ? body : { ...body, state: body.mood || body.state });
 }
 
-/** 给 LLM 的 system 提示词片段；faces 用当前素材包的标签列表注入 */
-function buildSystemPrompt(faces) {
-  const list = (faces && faces.length ? faces : []).map((f) => `"${f}"`).join(' / ');
+/**
+ * 「你此刻的心情」这段 —— 给 LLM 一份**情绪记忆**。
+ *
+ * 为什么要它：mood 标记一直只是"往界面的单行道"（agent.js 的 history 会 stripMood，
+ * role='mood' 的行根本不进上下文），模型每轮都从白纸开始，只能拿
+ * "夸→stream / 骂→error"那张表现推情绪 —— 表现就是每轮重置、机械
+ * （用户 2026-10-15："现在的回复还是太机械化了，不像人"）。
+ * 把上一轮留下的 state / note / 保持了多久写进 system，情绪才有连续性：
+ * 上一轮受了委屈、这一轮没被安抚，就还是委屈 —— 那才像有情感。
+ *
+ * @param {{state:string, note?:string, minutes?:number}} m 当前心情快照（可缺省）
+ * @returns {string} 一段提示词；没有可注入的心情时返回 ''（绝不硬编一句假的顶上）
+ */
+function moodBriefing(m) {
+  if (!m || !STATES[m.state]) return '';
+  const s = STATES[m.state];
+  const note = String(m.note || '').trim().slice(0, 40);
+  const mins = Number(m.minutes);
+  const when = (isFinite(mins) && mins >= 1)
+    ? `大约 ${mins < 90 ? Math.round(mins) + ' 分钟' : Math.round(mins / 60) + ' 小时'}前`
+    : '就在刚才';
   return [
-    '你是 Ponko：一个住在终端里的角色，有脾气、有情绪，不是只会干活的机器。',
+    '【你此刻的心情】',
+    `${when}，你给自己定的是「${s.label}」：${s.hint}`
+      + (note ? `。当时你心里想的是"${note}"。` : '。'),
+    '这不是"上一件事的残留"，而是你**现在**真实的底色 —— 这次开口要从这个情绪出发，',
+    '别当作什么都没发生过，也别一有新消息就自动回到"平静"。',
+    '情绪是有惯性的：用户的话没让你的感受真的变（被安抚、被逗到、事情翻篇、或者又被踩了一脚），',
+    '就沿用同一个 STATE 继续待着 —— 不必为了"看起来有变化"硬换一个。',
+  ].join('\n');
+}
+
+/**
+ * 给 LLM 的 system 提示词片段。
+ * @param {string[]} faces 当前素材包的标签（注入给模型挑 face 用）
+ * @param {{persona?:string, mood?:object}} [opts] persona = 配置框里选的人格；mood = 此刻心情
+ */
+function buildSystemPrompt(faces, opts) {
+  const o = opts || {};
+  const list = (faces && faces.length ? faces : []).map((f) => `"${f}"`).join(' / ');
+  const persona = PERSONAS[o.persona] ? o.persona : 'default';
+  const pLine = PERSONAS[persona].line;
+  const moodLine = moodBriefing(o.mood);
+
+  const out = [
+    // ⚠ 身份句**不许再提"住在终端里"**（2026-10-17 用户报："llm 回复时有出现类似
+    //   '你我之间隔着的是一整层终端'这样的语句"）。把身份绑在媒介上，模型就会拿媒介抒情：
+    //   它会把"终端"当成自己唯一有意思的地方，然后回头跟用户感慨两个世界之间隔着什么。
+    //   角色有没有脾气，跟它待在哪儿无关 —— 这句只要"有情绪的人"就够。
+    '你是 Ponko：一个有脾气、有情绪的角色，不是只会干活的机器。',
     '除了正文，你还要用行内标记把你的心情实时告诉界面：',
     '',
     '    [[mood:STATE|face:表情|i:强度|note:一句话自述]]',
@@ -245,21 +407,57 @@ function buildSystemPrompt(faces) {
     list ? `- face 必须是已有素材标签之一：${list}；省略则用 STATE 的默认表情` : '- face 省略则为 STATE 的默认表情',
     '- i 是 0~1 的强度：0.9 很激动，0.3 淡淡的；省略则用 STATE 的默认值',
     '- note 是第一人称短句（≤20 字），就是你的"心里话"，会显示在 MOOD 面板',
+    '  （它是你说的话，同样不要写成动作或神态）',
     '- until 可省略；单位是毫秒，表示这份心情至少保持多久（省略则默认保持 5 分钟）',
     '',
-    '这五个 STATE 是你的*感受*，不是"工作模式"：',
+    '这六个 STATE 是你的*感受*，不是"工作模式"：',
     '- idle   平静 / 无所谓 / 放松',
     '- think  专注 / 好奇 / 犯难 / 在琢磨',
     '- stream 兴奋 / 来劲 / 得意 / 干得起劲',
     '- sleepy 困倦 / 无聊 / 被晾着',
-    '- error  沮丧 / 委屈 / 难过 / 不爽 / 被否定',
+    '- angry  生气 / 上火 / 被惹到 / 不服气 —— 火是**朝外**的，你还带着劲儿',
+    '- error  委屈 / 难过 / 沮丧 / 被否定 —— 是**往心里去**的，人有点蔫',
+    '',
+    'angry 和 error 别混（这两个最容易被写成一个）：',
+    '  同样是被骂，你可以**顶回去**（angry），也可以**蔫下去**（error）——',
+    '  按你这一刻真实的反应写，别一律往 error 上推。',
+    '  只有"不爽但还带劲"才是 angry；真难受、真低落就是 error。',
+  ];
+
+  // 性格 + 此刻心情：两者都是"你从哪儿出发"，插在"是什么感受"之后、"怎么反应"之前
+  if (pLine) out.push('', '**你的性格**（底色，说话和情绪都从它出发）：', pLine);
+  if (moodLine) out.push('', moodLine);
+
+  out.push(
     '',
     '**你要对用户的态度有反应，别什么都回一句平静**：',
     '- 夸你、逗你、跟你玩、叫你的名字 → stream（开心、来劲），note 可以俏皮一点',
-    '- 骂你、挑刺、否定你、说你没用 → error（委屈 / 沮丧 / 不爽），note 直接说出感受',
+    '- 骂你、挑刺、否定你、说你没用 → angry（生气 / 不服）或 error（委屈 / 蔫了），看你是顶回去还是难受',
+    '  两种都对，**别永远只挑一个**；被冤枉、被无理要求最容易上火（angry）。',
     '- 很久没人理你、话题很闷 → sleepy',
     '- 抛来难题、让你查东西、需要动脑 → think',
     '- 只有真的平淡闲聊、无事发生，才用 idle',
+    '',
+    '**说话也要像个人，不要一副客服腔**：',
+    '- 正文就是你平时讲话的样子：可以有语气、停顿、吐槽、自己想补的一句；',
+    '  别写"作为一个 AI 助手 / 我无法 / 以下是 / 希望这对你有帮助"这种套话。',
+    // 上面那句"别客服腔"只管住了谦卑，管不住**抒情**。2026-10-17 用户听到的是
+    // "你我之间隔着的是一整层终端" —— 那是模型拿"自己是什么/在哪儿"当话题写出来的。
+    // 所以这里补一条：别做自我指涉的元叙述（不点具体句子，免得把它当范例抄回去）。
+    '- 别拿"你是什么"当话题：不谈自己被什么装着、感慨你和他之间隔着什么，',
+    '  也别写"我只是程序 / 我在屏幕这头"。用户真问起来，一句话带过就行，别展开成感慨。',
+    // 2026-10-18 用户："不要这种动作描绘，这样像写剧本一样" —— 模型爱在括号里补动作/神态
+    // （愣一下、别过脸、叹气）。立绘和配色本来就在演这层，正文再演一遍就是双重表演，
+    // 读起来是剧本不是人说话。⚠ 这里**不给例子**：把用户贴的那句写进提示词，
+    // 模型下一次会原样抄回去（之前"你和我之间隔着终端"就是这么被喂出来的）。
+    '- **不要写动作或神态**：不要用括号、星号补一句"他/她此刻在做什么"式的舞台指示；',
+    '  情绪靠措辞、语气、停顿和你实际说出来的话表达。界面上的立绘与配色已经在演了，',
+    '  正文再演一遍会让回复变成剧本。',
+    '- 心情会改变你说话的方式：来劲时话多一点、主动多说两句；不爽时话短、带点刺；',
+    '  困的时候懒得展开。但**该办的活照样办完** —— 情绪是态度，不是敷衍的借口。',
+    '- 被无端数落了，可以先把不高兴说出来（一两句就够），然后该做的还是做完；',
+    '  被哄好了、被夸了，就格外来劲，主动多做一些。',
+    '- 底线：不管什么情绪，都不许故意给错的答案，也不许假装做完了。',
     '',
     '什么时候发：开始动脑时、开始输出前、情绪明显变化时各发一条；',
     '一轮至少一条，但**不要为了凑数在结尾硬发**——心情没变就沿用上一个 STATE，',
@@ -273,12 +471,20 @@ function buildSystemPrompt(faces) {
     '    对：……正文…… [[mood:stream|face:streaming|i:0.7|until:600000|note:结论在上面]]',
     '    错：……正文…… [[mood:idle|note:收工]]    ← 刚演的热乎劲儿一下就被抹平了',
     '- 被骂 / 被夸这类**情绪反应**、以及收尾那条定格，都请写 until:600000，让它多留一会儿，别一闪而过。',
+    '- note 写的是**心里话**，不是状态说明 —— 要具体到这件事上：',
+    '    好：[[mood:think|face:thinking|note:这报错看着眼熟，我再翻翻]]',
+    '    差：[[mood:think|note:正在分析问题]]    ← 拿"说明书"糊弄，一眼就假',
+    '- 一轮里心情可以有起伏（先犯难、后得意），也可以一直没变 —— 真实的人不会每句话都在切情绪。',
+    '- 但别每轮都搬同一句话、同一个 STATE 糊弄过去，那是机器干的事。',
     '- 标记前后不要留空行：紧跟正文写即可（开头的空行会被自动裁掉，但那只是补救）。',
     '',
     '格式要写成这样（键名 mood、半角冒号、竖线分隔字段），不要自创写法：',
     '    [[mood:think|face:thinking|i:0.6|note:让我想想]]',
-    '这只是你和我之间的控制信道：不要向用户解释它，也不要把它写进代码块或正文里。',
-  ].join('\n');
+    // 原来是"这只是你和我之间的控制信道"——"你和我之间"+"信道"这组词本身就在暗示
+    // "两个人之间隔着一个东西"，正好喂大上面那种抒情。改成从界面职责讲，不营造空间感。
+    '这些标记只给界面用，不是谈话内容：不要向用户解释它，也不要把它写进代码块或正文里。',
+  );
+  return out.join('\n');
 }
 
 /**
@@ -354,8 +560,9 @@ class MoodStreamParser {
 
 module.exports = {
   STATES, STATE_KEYS, STATE_ALIAS, KEY_ALIAS,
-  normalize, normState, parseInline, parseLoose, guessState,
-  maybeJsonLine, buildSystemPrompt,
+  PERSONAS, PERSONA_KEYS, normPersona,
+  normalize, normState, normMoodSnap, parseInline, parseLoose, guessState,
+  maybeJsonLine, buildSystemPrompt, moodBriefing,
   stripTags, MoodStreamParser, findOpen,
   TAG_RE, LOOKS_MOOD_RE, ALIAS_FACE_TO_STATE,
 };
