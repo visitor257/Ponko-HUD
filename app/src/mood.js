@@ -112,7 +112,11 @@ export class Mood {
     this.intensity = typeof ev.intensity === 'number'
       ? Math.max(0, Math.min(1, ev.intensity))
       : MOOD_STATES[s].base / 100;
-    if (ev.face !== undefined) this.face = ev.face ? String(ev.face) : null;
+    // face 省略 = 用 STATE 的默认表情（frameTag 会拿 state 顶）。
+    // ⚠ 这里**不能沿用上一次的 face**：以前只在带 face 时才覆盖，于是
+    // "先 angry（face:angry）→ 再声明 error（没写 face）"会变成"状态是 error、立绘还是 angry"，
+    // 用户看到的就是"心情设错了"（2026-10-18 报的）。
+    this.face = (ev.face === undefined || ev.face === null || ev.face === '') ? null : String(ev.face);
     // agent 给的 note 是**内容**（不是界面文案），原样留着；同时把本地兜底那句作废
     if (ev.note !== undefined) { this.noteText = String(ev.note || ''); this.noteKey = ''; }
     this.holdUntil = now + Math.min(600000, Number(ev.until) || DEFAULT_HOLD);

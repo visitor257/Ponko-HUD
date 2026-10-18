@@ -4,7 +4,7 @@ English version — [README.en.md](README.en.md)
 
 > 全屏无边框的 eDEX-UI 风格 HUD 桌面应用（Windows）。界面由自绘字符网格逐帧渲染，不依赖 Electron 等应用框架。
 
-**Windows** · **前端 / 后端零依赖** · **MIT** · 界面语言 `zh-cn` / `en` / `ja` / `ru` / `tlh`
+**Windows** · **前端 / 后端零依赖** · **代码 MIT / 形象保留所有权利** · 界面语言 `zh-cn` / `en` / `ja` / `ru` / `tlh`
 
 ## 目录
 
@@ -72,6 +72,11 @@ English version — [README.en.md](README.en.md)
   **心情只由 agent 改**（2026-10-17）：没有"没人说话两分钟就自动变瞌睡"这种兜底，也不会因为
   声明"到期"自己退回待机 —— 停多久就是多久，直到 agent 下一次开口。程序只在三种情况下动它：
   新对话从待机起步、开机把 agent 自己声明过的那份还回来、调试旁路 `?mood=`
+  **模型整轮漏了标记会被补问**（2026-10-18）：它有时嘴上说"就定在这一档"，正文里却一条
+  标记都没写 —— 那一轮界面就一步不动，用户看到的就是"心情设错了"。所以流结束、且一条声明
+  都没收到时，后端拿它刚说完的正文再问一次，只让它输出一行标记（还是模型自己判断，不是本地猜）；
+  补不出来就保持原样，绝不硬塞一个 state。每轮**实际声明了什么**、是正文里的还是补问来的，
+  记在 `run/mood.log`，出问题能回看。
 - **原生窗口** —— pywebview + WebView2，独立任务栏身份、自有图标、单实例
 - **零依赖后端** —— 纯 Node 标准库实现，无任何第三方包
 
@@ -168,7 +173,7 @@ app/src/        前端：grid 字符网格、dots 立绘点阵化、vt 终端仿
 app/src/i18n/   语言包：index.js 的 t() 入口 + zh-cn.js（简中，ui.*/boot.* 均为全量）+ en.js（ui.* 与 boot.* 的兜底：任何语言包缺的条目都落这里）+ ja.js（界面日语；启动日志 boot.* 故意留空 → 落英文）+ ru.js（俄语，ui.* 与 boot.* 均为全量）+ tlh.js（克林贡语，ui.* 与 boot.* 均为全量，正文是 pIqaD 字形）
   + assets/fonts/pIqaD-qolqoS.ttf（克林贡文字体，SIL OFL，随包分发）
 server/         后端：server.js HTTP 服务、bootlog.js 启动记录、pty.js PTY 管理、ptybridge.py Windows ConPTY 桥
-characters/     角色素材（src/*.png 高清立绘 + frames/*.ans|json 字符帧）
+characters/     角色素材（src/*.png 高清立绘 + frames/*.ans|json 字符帧）；美术素材保留所有权利，不在 MIT 内（characters/LICENSE）
 native_host.py  pywebview 原生窗口宿主
 run/            运行时产物（对话存档、ui-state.json 界面状态、boot.log、host.log）：已在 .gitignore 中排除，**不进仓库**
 ```
@@ -240,7 +245,12 @@ SHELL 面板另有一组**内置命令**（在终端中直接输入，不带斜�
 
 ## License
 
-[MIT](LICENSE) © 2026 visitor257
+[代码 MIT](LICENSE) © 2026 visitor257
+
+**代码**（`app/`、`server/`、`tools/`、`native_host.py` 等）按 MIT 授权。
+**角色形象不在其内**：`characters/` 下的全部美术素材（`src/*.png`、`frames/*`、`pack.json`）
+**保留所有权利**，见 [characters/LICENSE](characters/LICENSE)。它可以随本项目一起运行、可以留在
+fork / 克隆里，但不得单独摘出来再分发、二创或商用。别的用途先在仓库开 issue 问一声。
 
 `characters/ponko/` 是**正式角色形象**：`src/` 里 6 张图（`idle / thinking / streaming / sleepy / angry / error`）
 对应心情的 6 个 face 标签，`frames/` 是 `tools/charpack.py` 转出来的方块字符帧。
@@ -304,7 +314,8 @@ SHELL 面板另有一组**内置命令**（在终端中直接输入，不带斜�
 > 立绘绕开网格。几何版留在 `characters/_archive/ponko-geo/`，程序不再加载它。
 
 `characters/ponko/src` 由 `tools/_matte_pack.py` 从角色原画生成（连通域抠背景 + 去右下角水印 +
-取景到腰），不含任何第三方素材，适用上述 MIT 授权。
+取景到腰），不含任何第三方素材。授权**不随代码走**：代码是 MIT，形象保留所有权利
+（[characters/LICENSE](characters/LICENSE)）。
 
 `characters/_archive/` 只留**不再加载**的历史形象（几何版 `ponko-geo`、早期的 `ponko-ai`）——
 目录扫描只走 `characters/` 下一层，不会往里钻。开发期那个测试占位角色（`ds-whale`）已经删掉；

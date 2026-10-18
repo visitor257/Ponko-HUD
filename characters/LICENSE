@@ -1,0 +1,41 @@
+Character artwork — All Rights Reserved
+角色形象素材 —— 保留所有权利
+
+Copyright (c) 2026 visitor257. All rights reserved.
+
+This directory and everything under it (characters/**, including every pack
+under _archive/) is the character artwork of Ponko HUD: the source
+illustrations in src/, the block-character frames and their metadata in
+frames/ (the .ans, .json, pack.json and preview.html files derived from
+them), and any future packs.
+
+These files are NOT covered by the MIT license that applies to the source
+code of Ponko HUD (see ../LICENSE). No permission is granted to copy them
+out, modify them, redistribute them, sublicense them, sell them, or use them
+in derivative works — commercial or otherwise.
+
+What you may do:
+
+  - run Ponko HUD with these assets as shipped;
+  - keep them inside a fork or clone of this repository, as long as they are
+    not separated from the project and redistributed on their own;
+  - show screenshots or recordings of the running application.
+
+For anything else, open an issue on the repository and ask first.
+
+--------------------------------------------------------------------------
+
+本目录及其下所有内容（characters/ 全部子目录，含 _archive/ 里的每个包）是
+Ponko HUD 的角色形象素材：src/ 里的原图、frames/ 里由它们生成的方块字符帧
+与元数据（.ans、.json、pack.json、preview.html），以及以后新增的包。
+
+这些文件**不适用** Ponko HUD 源码的 MIT 许可（见 ../LICENSE）。未授予任何
+复制、修改、再分发、再许可、销售或用于衍生作品的许可，商业用途与否皆同。
+
+你可以：
+
+  - 按原样运行 Ponko HUD 并使用这些素材；
+  - 在 fork 或克隆的本仓库里保留它们，前提是它们没有被单独摘出来再分发；
+  - 展示运行中应用的截图或录像。
+
+其他用途请先在仓库开 issue 询问。

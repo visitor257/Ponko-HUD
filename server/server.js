@@ -325,6 +325,12 @@ const UI_PATH = process.env.PONKO_UI_PATH
   : (process.env.PONKO_CONV_DIR
     ? path.join(CONV_DIR, '.ui-state.json')
     : path.join(ROOT, 'run', 'ui-state.json'));
+
+// 心情日志：一轮一条，记下**模型实际声明了什么**（state / face / i / note），
+// 以及是不是"正文里漏了、事后补问出来的"。用户报"心情设置错了"时，这是唯一能回看的证据 ——
+// 正文里的标记早被剥掉了，光看对话存档只能看到"它嘴上说了什么"。
+// 位置跟 UI_PATH 同一个目录：验证脚本把存档指到临时目录时，这份日志也跟着进去，不脏本机。
+const MOOD_LOG = path.join(path.dirname(UI_PATH), 'mood.log');
 const UI_DIR = path.dirname(UI_PATH);
 const UI_MOOD_STATES = new Set(moodp.STATE_KEYS);    // 封闭枚举，跟 /api/mood/protocol 同源
 const UI_MOOD_SOURCES = new Set(['agent', 'auto', 'manual']);
@@ -1007,6 +1013,94 @@ function buildHistory(history, text) {
   return out;
 }
 
+// ─────────────────────────────── 心情兜底（模型整轮不发标记时）
+//
+// 2026-10-18 用户报"起码有两次心情设置有错误"：翻存档发现那几轮模型**根本没写
+// [[mood:...]]** —— 同一段历史复现，三次里三次都没写。漏了不会报错，界面只是停在
+// 上一副表情上，用户看到的就是"设了没生效 / 设错了"。
+//
+// 所以流结束后如果一条声明都没收到，就拿它**刚说完的这段正文**再问一次，只让它输出
+// 一行标记。心情仍然由模型判断（换了个更专注的问法），不是本地猜、也没有任何默认值：
+// 补问失败（超时 / 返回看不懂）就当它这轮没说话，界面保持原样，绝不硬塞一个 state。
+// 12s 上限。max_tokens 要留够：deepseek-flash 这类**带推理**的模型会先吐一大段
+// reasoning_content，80 个 token 全被它吃掉，正文是空的（finish_reason=length）——
+// 实测 200 还不够，400 才稳定收在 STOP。时间也相应放宽，宁可慢一两秒也别补不出来。
+const MOOD_REPAIR_MS = 12000;
+
+function moodLogLine(src, m, text) {
+  try {
+    const line = [
+      new Date().toISOString(),
+      src,
+      m.state || '?',
+      'face=' + (m.face || '-'),
+      'i=' + (m.intensity === undefined ? '-' : m.intensity),
+      'until=' + (m.until === undefined ? '-' : m.until),
+      'note=' + JSON.stringify(m.note || ''),
+      'text=' + JSON.stringify(String(text || '').replace(/\s+/g, ' ').trim().slice(0, 40)),
+    ].join('\t') + '\n';
+    fs.appendFileSync(MOOD_LOG, line);
+  } catch (e) { /* 日志写不进去不能影响回复 */ }
+}
+
+async function repairMood(cfg, faces, text) {
+  const body = String(text || '').trim();
+  if (!body) return null;
+  console.log('[mood] 本轮没收到标记，补问一次');
+  const sys = [
+    '你把一段角色台词归到一种心情上。只输出一行标记，别的什么都不写。',
+    '- STATE 只能是：' + moodp.STATE_KEYS.join(' / '),
+    (faces && faces.length) ? '- face 必须从这些标签里选：' + faces.join(' / ') : '',
+    '格式：[[mood:STATE|face:标签|i:0.6|until:600000|note:二十字以内的第一人称心里话]]',
+  ].filter(Boolean).join('\n');
+  const q = '台词：\n' + body.slice(0, 4000);
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), MOOD_REPAIR_MS);
+  try {
+    let out = '';
+    if (activeProvider(cfg) === 'anthropic') {
+      const url = (cfg.baseUrl || '').replace(/\/+$/, '').replace(/\/v1$/, '') + '/v1/messages';
+      const r = await fetch(url, {
+        method: 'POST', signal: ctl.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': cfg.apiKey,
+          'anthropic-version': ANTHROPIC_VERSION,
+        },
+        body: JSON.stringify({
+          model: cfg.model || 'claude-3-5-sonnet-latest',
+          max_tokens: 400,
+          system: sys,
+          messages: [{ role: 'user', content: q }],
+        }),
+      });
+      if (!r.ok) { console.log('[mood] 补问失败 HTTP ' + r.status); return null; }
+      const j = await r.json();
+      out = (j.content || []).map((x) => x.text || '').join('');
+    } else {
+      const url = (cfg.baseUrl || '').replace(/\/+$/, '').replace(/\/v1$/, '') + '/v1/chat/completions';
+      const r = await fetch(url, {
+        method: 'POST', signal: ctl.signal,
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + cfg.apiKey },
+        body: JSON.stringify({
+          model: cfg.model || 'gpt-3.5-turbo',
+          max_tokens: 400, temperature: 0.2, stream: false,
+          messages: [{ role: 'system', content: sys }, { role: 'user', content: q }],
+        }),
+      });
+      if (!r.ok) { console.log('[mood] 补问失败 HTTP ' + r.status); return null; }
+      const j = await r.json();
+      out = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '';
+    }
+    return new moodp.MoodStreamParser(faces).feed(out).moods[0] || null;
+  } catch (e) {
+    console.log('[mood] 补问异常：' + (e && e.message));   // 超时 / 网络错：这一轮就当没声明
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // 真 LLM（SSE 流式）。两套协议：OpenAI 兼容 /chat/completions 与 Anthropic 原生 /messages。
 // 心情标记 [[mood:...]] 仍由原解析器处理，所以真模型只要按协议在正文里声明情绪，
 // 前端/角色链路一行都不用改。
@@ -1038,7 +1132,7 @@ async function callRealLLM(res, emit, text, history, cfg, opts) {
 
   const reader = resp.body.getReader();
   const dec = new TextDecoder();
-  let buf = '', tokens = 0, lastMood = null;
+  let buf = '', tokens = 0, lastMood = null, full = '';
   const parser = new moodp.MoodStreamParser(facesFromPacks());
   const trimLead = makeLeadTrimmer();
   try {
@@ -1056,16 +1150,21 @@ async function callRealLLM(res, emit, text, history, cfg, opts) {
         const delta = j.choices && j.choices[0] && j.choices[0].delta ? (j.choices[0].delta.content || '') : '';
         if (!delta) continue;
         const taken = parser.feed(delta);
-        for (const m of taken.moods) { lastMood = m; emit({ t: 'mood', ...m, src: 'agent' }); }
+        for (const m of taken.moods) { lastMood = m; emit({ t: 'mood', ...m, src: 'agent' }); moodLogLine('stream', m, full); }
         const s = trimLead(taken.text);
-        if (s) { emit({ t: 'token', text: s }); tokens++; }
+        if (s) { emit({ t: 'token', text: s }); tokens++; full += s; }
       }
     }
   } catch (e) { emit({ t: 'error', text: '读取 LLM 流失败：' + e.message }); }
   const tail = parser.flush();
-  for (const m of tail.moods) { lastMood = m; emit({ t: 'mood', ...m, src: 'agent' }); }
+  for (const m of tail.moods) { lastMood = m; emit({ t: 'mood', ...m, src: 'agent' }); moodLogLine('stream', m, full); }
   const ts = trimLead(tail.text);
-  if (ts) { emit({ t: 'token', text: ts }); tokens++; }
+  if (ts) { emit({ t: 'token', text: ts }); tokens++; full += ts; }
+  // 整轮一条标记都没有 —— 模型把协议忘了。拿它刚说的正文单独补问一次（见 repairMood）。
+  if (!lastMood && full.trim()) {
+    const m = await repairMood(cfg, facesFromPacks(), full);
+    if (m) { lastMood = m; emit({ t: 'mood', ...m, src: 'agent' }); moodLogLine('repair', m, full); }
+  }
   emit({ t: 'done', tokens: Math.max(1, tokens), mood: lastMood || undefined });
 }
 
@@ -1118,7 +1217,7 @@ async function callAnthropic(res, emit, text, history, cfg, opts) {
 
   const reader = resp.body.getReader();
   const dec = new TextDecoder();
-  let buf = '', tokens = 0, lastMood = null;
+  let buf = '', tokens = 0, lastMood = null, full = '';
   const parser = new moodp.MoodStreamParser(facesFromPacks());
   const trimLead = makeLeadTrimmer();
   try {
@@ -1139,16 +1238,21 @@ async function callAnthropic(res, emit, text, history, cfg, opts) {
         if (j.type === 'error' && j.error && j.error.message) { emit({ t: 'error', text: String(j.error.message).slice(0, 200) }); }
         if (!delta) continue;
         const taken = parser.feed(delta);
-        for (const m of taken.moods) { lastMood = m; emit({ t: 'mood', ...m, src: 'agent' }); }
+        for (const m of taken.moods) { lastMood = m; emit({ t: 'mood', ...m, src: 'agent' }); moodLogLine('stream', m, full); }
         const s = trimLead(taken.text);
-        if (s) { emit({ t: 'token', text: s }); tokens++; }
+        if (s) { emit({ t: 'token', text: s }); tokens++; full += s; }
       }
     }
   } catch (e) { emit({ t: 'error', text: '读取 LLM 流失败：' + e.message }); }
   const tail = parser.flush();
-  for (const m of tail.moods) { lastMood = m; emit({ t: 'mood', ...m, src: 'agent' }); }
+  for (const m of tail.moods) { lastMood = m; emit({ t: 'mood', ...m, src: 'agent' }); moodLogLine('stream', m, full); }
   const ts = trimLead(tail.text);
-  if (ts) { emit({ t: 'token', text: ts }); tokens++; }
+  if (ts) { emit({ t: 'token', text: ts }); tokens++; full += ts; }
+  // 整轮一条标记都没有 —— 模型把协议忘了。拿它刚说的正文单独补问一次（见 repairMood）。
+  if (!lastMood && full.trim()) {
+    const m = await repairMood(cfg, facesFromPacks(), full);
+    if (m) { lastMood = m; emit({ t: 'mood', ...m, src: 'agent' }); moodLogLine('repair', m, full); }
+  }
   emit({ t: 'done', tokens: Math.max(1, tokens), mood: lastMood || undefined });
 }
 

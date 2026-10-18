@@ -152,5 +152,21 @@ console.log('\n── ⑦ Mood.reset()：新建对话的"从零开始" ──');
   chk('reset 不是"淡过去"：value 直接落到待机高度', Math.abs(m.value - 62) < 0.001, String(m.value));
 }
 
+console.log('\n── ⑧ 省略 face 时不许沿用上一次的脸（2026-10-18 报的"心情设错了"） ──');
+{
+  const m = new Mood();
+  m.fromAgent({ state: 'angry', face: 'angry', intensity: 0.7 });
+  chk('先来的带 face:angry', m.frameTag() === 'angry', m.frameTag());
+  m.fromAgent({ state: 'error', intensity: 0.6 });     // 省略 face → 用 STATE 的默认表情
+  chk('下一条没写 face → 回到 error 自己的默认表情，不是还挂着 angry',
+    m.state === 'error' && m.face === null && m.frameTag() === 'error',
+    `${m.state}/${m.face}/${m.frameTag()}`);
+  m.fromAgent({ state: 'think', face: 'thinking' });
+  chk('显式给的 face 照旧生效', m.frameTag() === 'thinking', m.frameTag());
+  m.fromAgent({ state: 'idle', face: '' });
+  chk('给空串等于没给：回默认', m.state === 'idle' && m.face === null && m.frameTag() === 'idle',
+    `${m.state}/${m.face}/${m.frameTag()}`);
+}
+
 console.log(`\n${failed ? 'FAILED ' + failed : '全部通过'}`);
 process.exit(failed ? 1 : 0);

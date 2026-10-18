@@ -4,7 +4,7 @@ English version — [中文版 / Chinese version](README.md)
 
 > A full-screen, borderless, eDEX-UI-style HUD desktop application for Windows. The interface is rendered frame by frame on a hand-drawn character grid, with no dependency on application frameworks such as Electron.
 
-**Windows** · **Zero dependencies in the frontend / backend** · **MIT** · UI languages `zh-cn` / `en` / `ja` / `ru` / `tlh`
+**Windows** · **Zero dependencies in the frontend / backend** · **code MIT / artwork all rights reserved** · UI languages `zh-cn` / `en` / `ja` / `ru` / `tlh`
 
 ## Table of Contents
 
@@ -81,7 +81,13 @@ English version — [中文版 / Chinese version](README.md)
   **Only the agent changes the mood** (2026-10-17): there is no "two quiet minutes → doze off" fallback, and a
   declared mood does not expire back to idle on its own — it stays until the agent speaks again. The program only
   touches it in three cases: a new conversation starts idle, a launch restores the mood the agent itself declared,
-  and the `?mood=` debug bypass
+  and the `?mood=` debug bypass.
+  **A turn that forgot the tag gets asked again** (2026-10-18): the model sometimes says "let's settle on this
+  state" in prose while writing no tag at all — that turn then changes nothing on screen, which the user reads as
+  "the mood was set wrong". So when a stream ends with zero declarations, the backend asks once more, showing the
+  model its own just-written text and requesting a single tag line (still the model's judgement, never a local
+  guess); if that fails, nothing is forced. What was actually declared each turn — and whether it came from the
+  stream or from that follow-up — is logged to `run/mood.log`
 - **Native window** — pywebview + WebView2, own taskbar identity, own icon, single instance
 - **Dependency-free backend** — implemented purely on the Node standard library, with no third-party packages
 
@@ -188,7 +194,7 @@ app/src/        frontend: grid character grid, dots portrait dot-matrix, vt term
 app/src/i18n/   language packs: index.js t() entry + zh-cn.js (Simplified Chinese, complete for ui.* and boot.*) + en.js (fallback for both: every entry missing from any pack lands here) + ja.js (Japanese UI; boot.* deliberately empty → falls to English) + ru.js (Russian, complete for ui.* and boot.*) + tlh.js (Klingon, complete for both, body text in pIqaD)
   + assets/fonts/pIqaD-qolqoS.ttf (Klingon script font, SIL OFL, redistributed unmodified)
 server/         backend: server.js HTTP service, bootlog.js boot records, pty.js PTY management, ptybridge.py Windows ConPTY bridge
-characters/     character assets (src/*.png artwork + frames/*.ans|json block frames)
+characters/     character assets (src/*.png artwork + frames/*.ans|json block frames); artwork is all rights reserved, not MIT (characters/LICENSE)
 native_host.py  pywebview native window host
 run/            runtime artefacts (saved conversations, ui-state.json UI state, boot.log, host.log): git-ignored, **never committed**
 ```
@@ -272,7 +278,13 @@ the directories in `native_host.py` and `app/src/main.js` to your own setup.
 
 ## License
 
-[MIT](LICENSE) © 2026 visitor257
+[Code: MIT](LICENSE) © 2026 visitor257
+
+The **source code** (`app/`, `server/`, `tools/`, `native_host.py`, …) is MIT-licensed.
+The **character artwork is not**: everything under `characters/` (`src/*.png`, `frames/*`,
+`pack.json`) is **all rights reserved** — see [characters/LICENSE](characters/LICENSE).
+It may run with the project and stay inside a fork or clone, but it must not be extracted and
+redistributed on its own, modified, or used commercially. For anything else, open an issue first.
 
 `characters/ponko/` holds the **shipping character artwork**: the six images in `src/`
 (`idle / thinking / streaming / sleepy / angry / error`) map to the mood face tags, and `frames/` holds the
@@ -339,8 +351,9 @@ itself is just one `drawImage`.
 > and is no longer loaded.
 
 `characters/ponko/src` is produced from the original character art by `tools/_matte_pack.py`
-(connected-component background removal + watermark cleanup + waist crop); no third-party assets,
-covered by the same MIT license.
+(connected-component background removal + watermark cleanup + waist crop); no third-party assets.
+The license does **not** follow the code: the code is MIT, the artwork is all rights reserved
+([characters/LICENSE](characters/LICENSE)).
 
 `characters/_archive/` only keeps historical looks that are **no longer loaded** (the geometric
 `ponko-geo`, the earlier `ponko-ai`) — the scan runs one level under `characters/` and never walks in.

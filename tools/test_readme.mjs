@@ -71,7 +71,11 @@ const zhCjk = (zh.match(CJK) || []).length;
 chk(`中文版确实是中文（${zhCjk} 个汉字）`, zhCjk > 500, String(zhCjk));
 
 // 两份都指向同一个 LICENSE，别出现各写一份的情况
-chk('两份都链到 LICENSE', /\[MIT\]\(LICENSE\)/.test(zh) && /\[MIT\]\(LICENSE\)/.test(en), '一处缺失');
+chk('两份都链到根 LICENSE（代码）', /\]\(LICENSE\)/.test(zh) && /\]\(LICENSE\)/.test(en), '一处缺失');
+// 形象不在 MIT 内（2026-10-18 用户明确）：README 必须把这条边界写出来，并链到那份说明
+chk('两份都说明形象另有授权', /characters\/LICENSE/.test(zh) && /characters\/LICENSE/.test(en), '缺形象授权说明');
+chk('中文明说形象保留所有权利', /保留所有权利/.test(zh), '没写清楚');
+chk('英文同样说清形象另有授权', /all rights reserved/i.test(en), '没写清楚');
 
 console.log(`\n${failed ? failed + ' 项失败' : '全部通过'}`);
 process.exit(failed ? 1 : 0);

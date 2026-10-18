@@ -134,7 +134,20 @@ let lastBody = null;                      // mock 收到的请求体
 const mock = http.createServer(async (req, res) => {
   const chunks = [];
   for await (const c of req) chunks.push(c);
-  try { lastBody = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch (e) { lastBody = null; }
+  let body = null;
+  try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch (e) { body = null; }
+  // 心情兜底（server.js 的 repairMood）是**非流式**的独立小请求："把这句台词归到一种心情"。
+  // 它不属于这一轮对话，不能盖掉这里记下来的请求体 —— 否则"历史有没有带过去"这些断言
+  // 会看到那句补问（2026-10-18 加兜底时踩到的）。直接回一行标记，不记、不改 lastBody。
+  if (body && !body.stream) {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      choices: [{ message: { content: '[[mood:idle|note:补的]]' } }],
+      content: [{ type: 'text', text: '[[mood:idle|note:补的]]' }],
+    }));
+    return;
+  }
+  lastBody = body;
   if (req.url === '/v1/messages') {
     if ((req.headers['x-api-key'] || '') !== KEY) { res.writeHead(401); res.end('{}'); return; }
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
