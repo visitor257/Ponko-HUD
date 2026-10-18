@@ -11,7 +11,7 @@
 //                                                              前端 Mood.fromAgent()
 //
 // 三个字段的分工：
-//   state     内部状态（idle/think/working/sleepy/error）—— 决定全局配色
+//   state     内部状态（idle/think/working/happy/sleepy/angry/error）—— 决定全局配色与心情条
 //   face      表情标签（素材包 characters/*/src/*.png 的文件名）—— 决定角色立绘
 //   note      第一人称短句 —— 显示在 MOOD 面板；intensity 影响数值与曲线
 //
@@ -27,6 +27,11 @@ const STATES = {
   // 说不清"来劲、干得起劲"那一半。改名历史**写在这里、不写进 hint**：
   // hint 会被整句注入提示词（"你给自己定的是「工作」：<hint>"），写日期和旧名会被模型当成设定念出来。
   working: { label: '工作', hint: '正在干活 / 逐字输出 / 干得起劲' },
+  // happy 是 2026-10-18 从 working 里拆出来的第 7 个 state（用户先加了「高兴」这张立绘，
+  // 然后明确"我说的就是 mood"）。拆的理由和当时拆 angry 一样：working 同时兼着
+  // "手上在忙"和"心里亮起来"两义，纯高兴的那一轮只能落到 working —— 那张脸就白画了。
+  // 现在分工：happy = 情绪本身在上扬（被夸、被逗到、事情成了）；working = 劲头在手上。
+  happy:  { label: '高兴', hint: '心情亮起来了 —— 被夸 / 被逗到 / 事情成了 / 玩得开心（不一定在干活）' },
   sleepy: { label: '瞌睡', hint: '长时间没被唤起，低功耗待机' },
   // angry 与 error 是一对**方向相反**的坏心情（2026-10-17 用户加了第 6 张立绘后拆出来的）：
   //   angry = 向外，带着劲儿：生气、上火、被惹到、不服
@@ -57,7 +62,7 @@ const STATE_KEYS = Object.keys(STATES);
 //   素材 / 文档 / 测试
 //     ⑩ characters/<pack>/：src/<state>.png + frames/<state>.json|.ans + pack.json 的 moods
 //     ⑪ README.md / README.en.md 里那份心情清单
-//     ⑫ tools/_verify_charpack.mjs 的 STATES / EXPECT_TAG / 各处"5 个表情"计数
+//     ⑫ tools/_verify_charpack.mjs 的 STATES / EXPECT_TAG / 各处"N 个表情"计数
 //     ⑬ tools/test_mood_strip.mjs 补情绪词用例；tools/test_uistate.mjs 与 test_i18n.mjs
 //        的守卫是自动跟着枚举走的，不用改（但还是跑一遍确认）
 //
@@ -69,14 +74,21 @@ const STATE_ALIAS = {
   // 思考
   thinking: 'think', 思考: 'think', reasoning: 'think', analyze: 'think', busy: 'think',
   专注: 'think', 专心: 'think', 好奇: 'think', 疑惑: 'think', 犯难: 'think',
-  // 兴奋/开心（情绪上扬 → working，别让它一律落回待机）
+  // 兴奋/开心（情绪上扬 → happy，别让它一律落回待机）
+  // ⚠ 2026-10-18 之前这一整组都收敛到 working（那时只有它收"上扬"）。happy 独立成 state 后，
+  //   纯情绪词归 happy，跟"手上在忙"有关的词（来劲 / 输出 / 工作）才留在 working ——
+  //   模型直接写 [[mood:开心]] 时，界面该换的是那张高兴的脸，不是"正在输出"的配色。
+  happy: 'happy', 开心: 'happy', 高兴: 'happy', 快乐: 'happy', 愉快: 'happy', 欣喜: 'happy',
+  雀跃: 'happy', 惊喜: 'happy', 美滋滋: 'happy', 兴奋: 'happy', 得意: 'happy', 自豪: 'happy',
+  激动: 'happy', 被夸: 'happy', 心里美: 'happy',
+  glad: 'happy', proud: 'happy', excited: 'happy', joy: 'happy', joyful: 'happy',
+  cheerful: 'happy', cheer: 'happy', delight: 'happy', thrilled: 'happy',
+  // 干活 / 输出（劲头在手上，跟高不高兴是两件事）
   // ⚠ 'stream' 是 2026-10-18 之前的旧名，留在这里是为了让**旧存档与旧对话历史**里的
   //   [[mood:stream|...]] 仍然认得出来（丢掉的话那一轮等于没声明心情）。
   stream: 'working', work: 'working', working: 'working',
   streaming: 'working', 输出: 'working', 工作: 'working', speaking: 'working', reply: 'working',
-  兴奋: 'working', 来劲: 'working', 开心: 'working', 高兴: 'working', 得意: 'working',
-  自豪: 'working', 激动: 'working', 热情: 'working', 被夸: 'working',
-  excited: 'working', happy: 'working', glad: 'working', proud: 'working',
+  来劲: 'working', 热情: 'working',
   // 平静（真的没波澜才用）
   待机: 'idle', ok: 'idle', ready: 'idle', done: 'idle', calm: 'idle', fine: 'idle',
   平静: 'idle', 淡定: 'idle', 放松: 'idle', 轻松: 'idle', 满意: 'idle', relax: 'idle', cool: 'idle',
@@ -281,7 +293,10 @@ function findOpen(s) {
 // 猜不出来就返回 null —— 但标记照样被吃掉，只是这轮不改心情。
 const GUESS_RULES = [
   ['think',  /想|思考|推理|分析|检索|查|算|研究|犹豫|考虑|琢磨|推断|探究|盘算|思索|专注|专心|集中|疑惑|紧张|think|reason|analy|search|calcul|study|wonder|puzzl|confus|curious|focus|好奇/],
-  ['working', /说|输出|回答|讲|解释|写|表达|汇报|陈述|总结|介绍|补充|工作|干活|兴奋|来劲|开心|高兴|得意|自豪|激动|热情|被夸|generat|answer|reply|respond|speak|talk|explain|writ|output|working|stream|say|tell|excited|happy|glad|proud|cheer/],
+  // happy 必须排在 working **前面**：两边都收"高兴"这一类词，先到先得；
+  // 而且这些词在提示词里是给 happy 的，猜错成 working 就又是"脸白画"。
+  ['happy',  /高兴|开心|快乐|愉快|欣喜|雀跃|惊喜|美滋滋|兴奋|得意|自豪|激动|被夸|心里美|happy|glad|proud|excited|joy|cheer|delight|thrill/],
+  ['working', /说|输出|回答|讲|解释|写|表达|汇报|陈述|总结|介绍|补充|工作|干活|来劲|热情|generat|answer|reply|respond|speak|talk|explain|writ|output|working|stream|say|tell/],
   // angry 必须排在 error **前面**：两边都收"气"字系词，先到先得。
   ['angry',  /生气|愤怒|火大|恼火|暴怒|发火|发飙|气死|上火|不爽|烦躁|讨厌|气|angry|mad|furious|annoy|irritat|upset|rage/],
   ['error',  /错|失败|抱歉|异常|崩|危险|卡|坏|糟糕|崩溃|委屈|难过|伤心|沮丧|受挫|被骂|挨骂|低落|失望|无奈|受伤|error|fail|sorry|warn|bug|crash|bad|wrong|panic|afraid|sad|hurt|gloom|depress|frustrat/],
@@ -416,13 +431,19 @@ function buildSystemPrompt(faces, opts) {
     '  （它是你说的话，同样不要写成动作或神态）',
     '- until 可省略；单位是毫秒，表示这份心情至少保持多久（省略则默认保持 5 分钟）',
     '',
-    '这六个 STATE 是你的*感受*，不是"工作模式"：',
+    '这七个 STATE 是你的*感受*，不是"工作模式"：',
     '- idle   平静 / 无所谓 / 放松',
     '- think  专注 / 好奇 / 犯难 / 在琢磨',
-    '- working 兴奋 / 来劲 / 得意 / 干得起劲 / 正在输出',
+    '- happy  高兴 / 开心 / 被夸得美 / 事情成了 / 玩得开心',
+    '- working 来劲 / 干得起劲 / 正在往外输出 —— 重心在"手上在忙"',
     '- sleepy 困倦 / 无聊 / 被晾着',
     '- angry  生气 / 上火 / 被惹到 / 不服气 —— 火是**朝外**的，你还带着劲儿',
     '- error  委屈 / 难过 / 沮丧 / 被否定 —— 是**往心里去**的，人有点蔫',
+    '',
+    'happy 和 working 也别混（这两档最容易写成同一个）：',
+    '  happy 是**心情本身**在发亮（乐了、被夸、被逗到）；working 是**劲头**在手上（在写、在干、越干越起劲）。',
+    '  两件事能同时成立 —— 那就挑更贴近你此刻那句心里话的那个：真的只是乐，写 happy；',
+    '  手上正忙得带劲，写 working。别把"高兴"顺手都算成 working，那是另一档。',
     '',
     'angry 和 error 别混（这两个最容易被写成一个）：',
     '  同样是被骂，你可以**顶回去**（angry），也可以**蔫下去**（error）——',
@@ -437,7 +458,8 @@ function buildSystemPrompt(faces, opts) {
   out.push(
     '',
     '**你要对用户的态度有反应，别什么都回一句平静**：',
-    '- 夸你、逗你、跟你玩、叫你的名字 → working（开心、来劲），note 可以俏皮一点',
+    '- 夸你、逗你、跟你玩、叫你的名字 → happy（高兴），note 可以俏皮一点；',
+    '  要是同时正忙着手上的活，working 也对 —— 看你此刻更强烈的是"乐"还是"劲"',
     '- 骂你、挑刺、否定你、说你没用 → angry（生气 / 不服）或 error（委屈 / 蔫了），看你是顶回去还是难受',
     '  两种都对，**别永远只挑一个**；被冤枉、被无理要求最容易上火（angry）。',
     '- 很久没人理你、话题很闷 → sleepy',
@@ -475,7 +497,7 @@ function buildSystemPrompt(faces, opts) {
     '',
     '几条重要的落地细节：',
     '- 你**最后一条心情是这一轮情绪的定格**，决定回复结束后界面停在哪副表情/配色上。',
-    '  它是定格、不是归零：整轮都在思考/忙碌/兴奋，结尾就继续写 think / working 之类，',
+    '  它是定格、不是归零：整轮都在思考/忙碌/高兴，结尾就继续写 think / working / happy 之类，',
     '  **不要一到收尾就改回 idle/待机**（只有整轮本来就平静时才用 idle）——',
     '  否则前面演的情绪全白费，用户会觉得"又变回平静了"。',
     '    对：……正文…… [[mood:working|face:streaming|i:0.7|until:600000|note:结论在上面]]',

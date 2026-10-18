@@ -3,7 +3,7 @@
   "name": "ponko",
   "grid": {
     "cols": 48,
-    "rows": 28,
+    "rows": 25,
     "charset": "block"
   },
   "moods": {
@@ -31,6 +31,19 @@
         "zh-cn": "出错",
         "ru": "ошибка",
         "tlh": ""
+      }
+    },
+    "happy": {
+      "frames": [
+        "happy.ans"
+      ],
+      "fps": 0,
+      "loop": false,
+      "label": {
+        "en": "happy",
+        "zh-cn": "高兴",
+        "ru": "радость",
+        "tlh": ""
       }
     },
     "idle": {
@@ -66,9 +79,9 @@
       "fps": 0,
       "loop": false,
       "label": {
-        "en": "streaming",
-        "zh-cn": "输出",
-        "ru": "поток",
+        "en": "working",
+        "zh-cn": "工作",
+        "ru": "работа",
         "tlh": ""
       }
     },

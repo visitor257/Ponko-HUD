@@ -122,7 +122,11 @@ async function chat() {
   chk('没标记的回复照样把正文给出来', r.done && r.text.includes('不往下走了'), JSON.stringify(r.text));
   chk('补问了一次（非流式，只问一行标记）', repairCalls === 1 && sawStreamFlag === false,
     `calls=${repairCalls} stream=${sawStreamFlag}`);
-  chk('补问的 system 里有 STATE 枚举和格式', repairSys.includes('idle / think / working / sleepy / angry / error')
+  // 枚举从后端那份来，别在这里再抄一遍 —— 抄的话加一个 state 这条会假红（2026-10-18 加 happy 就红过）
+  const { createRequire } = await import('node:module');
+  const moodp = createRequire(import.meta.url)(path.join(ROOT, 'server', 'moodprotocol.js'));
+  chk('补问的 system 里有 STATE 枚举和格式',
+    repairSys.includes(moodp.STATE_KEYS.join(' / '))
     && repairSys.includes('[[mood:STATE|face:标签'), JSON.stringify(repairSys.slice(0, 60)));
   chk('补问带上了它刚说的正文', repairAsk.includes('不往下走了'), JSON.stringify(repairAsk.slice(0, 40)));
   chk('补出来的心情发给了界面', r.moods.length === 1 && r.moods[0].state === 'sleepy',

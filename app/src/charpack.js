@@ -22,6 +22,9 @@ const ALIAS = {
   think: ['thinking', 'think', '思考'],
   // working 是 2026-10-18 从 stream 改的名；'stream' 留着让旧素材包 / 旧存档照样能对上表情。
   working: ['streaming', 'working', 'stream', '输出', 'talk'],
+  // happy 是 2026-10-18 的第 7 个 state。包里若只有「高兴」这张中文名素材（或旧包根本没有
+  // 这张脸），靠这条别名对上；都没有才会落到 idle。
+  happy: ['happy', '高兴', '开心', 'joy'],
   sleepy: ['sleepy', '瞌睡', 'sleep'],
   angry: ['angry', '生气', '愤怒', 'mad'],
   error: ['error', '出错', 'sad'],

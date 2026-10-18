@@ -858,7 +858,10 @@ function killCommand(sess) {
 // 标记由 moodp.parseInline 剥离。换真 LLM 时，只要把 fakeAgentBody 换成模型输出即可，
 // 前端/主题/角色链路一行都不用改。
 
-const DEFAULT_STATE_INTENSITY = { idle: 0.45, think: 0.6, working: 0.8, sleepy: 0.2, error: 0.7 };
+// state 没写 i 时的默认强度（跟前端 MOOD_STATES.base/100 对齐；happy 是 2026-10-18 新增的第 7 档）
+const DEFAULT_STATE_INTENSITY = {
+  idle: 0.45, think: 0.6, working: 0.8, happy: 0.93, sleepy: 0.2, angry: 0.78, error: 0.7,
+};
 
 function fakeAgentBody(text) {
   const lower = String(text || '').toLowerCase();

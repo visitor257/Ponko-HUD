@@ -57,8 +57,13 @@ const CASES = [
   ['情绪词·委屈', '[[mood:委屈]]正文', 'error'],
   ['情绪词·被骂', '[[心情：被骂]]正文', 'error'],
   ['情绪词·难过', '[[mood:难过|face:error]]正文', 'error'],
-  ['情绪词·开心', '[[mood:开心|face:streaming]]正文', 'working'],
-  ['情绪词·得意', '[[mood:得意]]正文', 'working'],
+  ['情绪词·开心', '[[mood:开心|face:happy]]正文', 'happy'],
+  ['情绪词·得意', '[[mood:得意]]正文', 'happy'],
+  // happy 是 2026-10-18 从 working 拆出来的第 7 档：纯情绪词必须归 happy，
+  // 还落到 working 的话那张高兴的立绘永远轮不到（加 state 又白加一次）。
+  ['情绪词·高兴', '[[mood:高兴]]正文', 'happy'],
+  ['情绪词·兴奋', '[[心情：兴奋|note:这个我能吹一天]]正文', 'happy'],
+  ['情绪词·被夸', '[[mood:被夸]]正文', 'happy'],
   ['情绪词·被晾', '[[mood:被晾]]正文', 'sleepy'],
   // 生气（angry）与委屈（error）是一对方向相反的坏心情，2026-10-17 拆开后必须各归各位：
   // 混着的话那张生气立绘永远轮不到（模型写"生气"却走到 error 上）。
@@ -150,7 +155,9 @@ for (const [name, body, wantState] of CASES) {
   record('提示词把 STATE 解释成感受而非工作模式', sys.includes('感受') && sys.includes('工作模式'), '');
   record('提示词明确"别什么都回一句平静"', sys.includes('别什么都回一句平静'), '');
   record('被骂 → error 的触发规则在', sys.includes('骂你') && /骂你[^\n]*error/.test(sys), '');
-  record('被夸 → working 的触发规则在', sys.includes('夸你') && /夸你[^\n]*working/.test(sys), '');
+  record('被夸 → happy 的触发规则在', sys.includes('夸你') && /夸你[^\n]*happy/.test(sys), '');
+  record('提示词写了 happy 与 working 的分工（否则两档永远只用一个）',
+    sys.includes('happy 和 working 也别混'), '');
   // 2026-10-18 改名：提示词里只该出现新名。旧名留给解析器（STATE_ALIAS）认历史，不该再教给模型；
   // 也防住"把开发注释写进 STATES.hint"—— hint 是整句注入的，写进去模型会当设定念出来。
   record('提示词里不再出现旧名 stream', !/\bstream\b/.test(sys), '');
@@ -303,7 +310,13 @@ console.log('\n── ⑬ 加/删一个 state 时最容易漏的几处（2026-10
   const sys = moodp.buildSystemPrompt(['idle', 'angry']);
   const missDoc = be.filter((k) => !new RegExp(`- ${k}\\s`).test(sys));
   record('提示词里逐个列出了所有 state（模型看不见就不会用）', missDoc.length === 0, missDoc.join(','));
-  record('提示词按 state 数量改了"这几个 STATE"那句', sys.includes('这六个 STATE'), '');
+  // 这句文案是硬编码的（不会跟着枚举变）—— 所以按**实际数量**拼出期望值再比，
+  // 否则加一个 state 就得回来手改一次，改漏了这里还会假红/假绿。
+  const CN_NUM = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
+  const nState = moodp.STATE_KEYS.length;
+  const numWord = CN_NUM[nState] || String(nState);
+  record('提示词按 state 数量改了"这几个 STATE"那句',
+    sys.includes(`这${numWord}个 STATE`), `期望"这${numWord}个 STATE"`);
   record('angry 与 error 的区别写进了提示词',
     sys.includes('angry 和 error 别混') && sys.includes('顶回去') && sys.includes('蔫'), '');
   record('"被骂"那条同时给了 angry 与 error 两个去向',

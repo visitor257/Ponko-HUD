@@ -22,6 +22,10 @@ export const MOOD_STATES = {
   // 2026-10-18 用户："把 stream 这个改成 working" —— 它本来就兼着"正在输出"与"来劲"两义，
   // `stream` 只说得清前一半。改名后协议里的原值就是 working；旧名靠 canonState() 收进来。
   working: { base: 88 },
+  // happy 是 2026-10-18 拆出来的第 7 个 state（用户："我说的就是 mood" —— 他要的是
+  // 一张真心情，不是 working 底下的一张备用脸）。base 给最高：高兴是**高唤醒**，
+  // 条子顶到最上面才像"心里亮起来"，比 working(88) 还高一档。
+  happy:   { base: 93 },
   sleepy:  { base: 30 },
   // base = 心情条的目标高度。生气是**高唤醒**（心跳快、憋着一股劲），所以给高分，
   // 别跟 error(24, 蔫下去) 混为一谈 —— 这俩数值差得越开，"上火"和"低落"在条上越一眼能认。
@@ -52,7 +56,7 @@ export function canonState(s) {
  * pack 还没扫到（启动最早期）→ 退回 state 本身，绝不拿别的语言顶上。
  *
  * @param {object|null} pack CharPack 实例（允许 null：素材包还没加载完）
- * @param {string} state 心情 state（idle / think / working / sleepy / angry / error）
+ * @param {string} state 心情 state（idle / think / working / happy / sleepy / angry / error）
  */
 export function moodLabel(pack, state) {
   const st = canonState(state);

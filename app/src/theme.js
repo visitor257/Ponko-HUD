@@ -28,6 +28,10 @@ const MOODS = {
   think:  { accent: rgb(240, 186, 80), land: rgb(206, 156, 62), glow: 0.8 },
   // 2026-10-18 由 stream 改名 working（协议里的原值变，配色不变）。
   working: { accent: rgb(96, 232, 128), land: rgb(78, 206, 110), glow: 1.0 },
+  // happy（2026-10-18 第 7 个 state）：暖粉。挑它是因为七个里还没有"暖而不危险"的色相 ——
+  // 黄给了 think、橙红给了 angry、正红给了 error，再来个黄橙就会跟 angry/think 糊在一起。
+  // 粉的饱和度低一档、亮度高一档，一眼看得出是"高兴"而不是"上火"。
+  happy:   { accent: rgb(255, 158, 200), land: rgb(224, 124, 172), glow: 0.95 },
   sleepy: { accent: rgb(158, 130, 240), land: rgb(134, 108, 214), glow: 0.35 },
   // angry 与 error 同属"坏心情"，靠**色温**分开：error 是偏粉的冷红（蔫下去），
   // angry 是饱和的火橙红（烧起来）—— 2026-10-17 加第 6 个 state 时定的。

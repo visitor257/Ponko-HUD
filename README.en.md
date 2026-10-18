@@ -77,9 +77,11 @@ English version — [中文版 / Chinese version](README.md)
   agent's own line, and its source) travels with the conversation file (`run/conversations/<id>.json`, `mood`
   field) and is restored per conversation on the next launch — so it is still there even after a while away
   (fixed 2026-10-15). **No state is folded on restore**, including `'working'` (formerly `stream`; what the
-  prompt emits for "praised / excited"): whatever it was when you quit is exactly what you get on reopen
-  (fixed 2026-10-18). The six states are `idle / think / working / sleepy / angry / error`; `working` covers
-  both "streaming tokens out" and "fired up and getting things done".
+  prompt emits for "hands busy and fired up"): whatever it was when you quit is exactly what you get on reopen
+  (fixed 2026-10-18). The seven states are `idle / think / working / happy / sleepy / angry / error`:
+  `working` means "streaming tokens out / heads-down and going at it", `happy` means "mood has lit up"
+  (praised, amused, something worked) — both can be true at once, and the model picks the one closer to the
+  thought it is having (split apart on 2026-10-18 when `happy` was added).
   **Only the agent changes the mood** (2026-10-17): there is no "two quiet minutes → doze off" fallback, and a
   declared mood does not expire back to idle on its own — it stays until the agent speaks again. The program only
   touches it in three cases: a new conversation starts idle, a launch restores the mood the agent itself declared,
@@ -301,9 +303,14 @@ For commercial use or anything else, open an issue first. The bundled Klingon fo
 "Ponko" is the name of this project; all rights in the name are reserved by the author
 (no trademark registration has been filed).
 
-`characters/ponko/` holds the **shipping character artwork**: the six images in `src/`
-(`idle / thinking / streaming / sleepy / angry / error`) map to the mood face tags, and `frames/` holds the
-block-character frames produced by `tools/charpack.py`.
+`characters/ponko/` holds the **shipping character artwork**: `src/` has 7 images — one per state.
+⚠ The asset **tags** (file names) do not exactly match the state names: the `working` image is called
+`streaming` (renaming a tag means renaming `frames/*.ans|*.json` too, and old saves carrying
+`face:"streaming"` would stop matching — so the name stayed), the other six match.
+`frames/` holds the block-character frames produced by `tools/charpack.py` (all seven share one framing,
+so switching expressions does not make the character jump).
+`happy` started as an extra face under `working` and became a state of its own on 2026-10-18: it needed
+more than a different picture — its own colours and its own place on the mood bar (see "seven states" above).
 `angry` and `error` are a pair of opposite bad moods — the former is fire aimed **outward**
 (worked up, defiant), the latter is **inward** deflation (hurt, defeated); their themes are kept apart on
 purpose (hot orange-red vs a cooler pinkish red) so you can tell at a glance which one it is.
