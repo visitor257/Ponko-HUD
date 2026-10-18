@@ -1,0 +1,50 @@
+Ponko HUD — what the MIT license covers, and what it does not
+Ponko HUD —— MIT 许可覆盖什么、不覆盖什么
+
+Copyright (c) 2026 visitor257. All rights reserved.
+
+This repository ships two different kinds of work under two different sets of
+terms. The split is stated here because the root LICENSE file is plain MIT:
+read on its own it would look as if the artwork were MIT-licensed too. It is
+not.
+
+  1. Source code — MIT (see LICENSE)
+     Everything else: app/, server/, the scripts under tools/, native_host.py,
+     and the other build and runtime files.
+
+  2. Character artwork and application icons — All Rights Reserved
+     characters/** (every pack, including _archive/) under characters/LICENSE,
+     and tools/assets/** (the application icon) under tools/assets/LICENSE.
+
+The artwork is NOT part of "the Software" as that term is used in the MIT
+license, and MIT grants no rights in it. It may only be used as its own
+license allows: run it, build from source for yourself, keep it in a fork
+(publishing the fork's source, not shipping builds), show screenshots or
+recordings, and quote it unmodified with credit in non-commercial writing.
+Any build, package or store submission that contains it may not be
+distributed; it may not be used commercially, modified, or extracted and
+redistributed on its own. Details, and the one exception (non-commercial
+quoting), are in characters/LICENSE.
+
+本仓库里的东西分成两类，条款不同。之所以单独写在这里：根 LICENSE 是标准 MIT，
+单看它很容易被读成"形象也是 MIT"—— 并不是。
+
+  1. 源码 —— MIT（见 LICENSE）
+     app/、server/、tools/ 下的脚本、native_host.py，以及其他构建与运行时文件。
+
+  2. 角色形象与应用图标 —— 保留所有权利
+     characters/**（含 _archive/ 下的每个包）见 characters/LICENSE；
+     tools/assets/**（应用图标）见 tools/assets/LICENSE。
+
+这些美术资源**不属于** MIT 许可里所说的 "the Software"，MIT 不授予任何相关权利。
+它们只能按其自身许可使用：运行、自行构建自用、留在 fork 里（发布 fork 的源码，
+不含发构建产物）、展示截图或录像、在非商业文章里引用未经修改的素材并注明出处。
+包含它们的构建产物、安装包、商店提交物不得分发；不得商用、修改、或摘出来单独再分发。
+细则与唯一的例外（非商业引用）见 characters/LICENSE。
+
+"Ponko" is the name of this project. All rights in the name and in the artwork
+are reserved by the author; neither may be used in a way that suggests the
+author endorsed or authorised your product.
+
+「Ponko」是本项目名称。名称与形象的权利均归作者所有，两者都不得用于任何使人
+误以为经过作者认可或授权的产品或服务。

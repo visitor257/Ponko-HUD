@@ -82,26 +82,32 @@ chk('英文同样说清形象另有授权', /all rights reserved/i.test(en), '�
 chk('非商业引用条款两边一致', /非商业/.test(zh) === /non-commercial/i.test(en), '两边不一致');
 
 // ── 2026-10-19：授权文本自身的守卫 ────────────────────────────────────────
-// 起因：根 LICENSE 是裸 MIT，字面上把 characters/ 也覆盖了 —— 子目录那份 "All Rights Reserved"
-// 收不回根 MIT 已授出的权利，GitHub 侧栏也照旧认成 MIT。范围必须在根 LICENSE 里切开。
+// 起因：根 LICENSE 是裸 MIT，字面上把 characters/ 也覆盖了。第一次尝试是把范围声明**写进**
+// 根 LICENSE —— 结果 GitHub 的许可证识别直接掉成 `Other/NOASSERTION`（MIT 正文被"污染"，
+// 相似度不够）。所以边界归 NOTICE，根 LICENSE 必须保持纯 MIT。这里两条一起钉。
 {
   const rootLic = read('LICENSE');
-  chk('根 LICENSE 声明了适用范围（只覆盖源码）',
-    /covers the source code/i.test(rootLic) && !/covers the whole repository/i.test(rootLic), '');
-  chk('根 LICENSE 指名把形象与图标排除在外',
-    /characters\/\*\*/.test(rootLic) && /tools\/assets\/\*\*/.test(rootLic), '没点名');
-  chk('根 LICENSE 指向两份素材许可',
-    /characters\/LICENSE/.test(rootLic) && /tools\/assets\/LICENSE/.test(rootLic), '链接缺失');
-  // MIT 正文没有被改坏（GitHub 要能继续识别成 MIT），只是前面多了一段范围声明
-  chk('MIT 正文仍然完整（许可证识别不能坏）',
+  const notice = read('NOTICE');
+  chk('根 LICENSE 是纯 MIT（不含范围声明 —— 塞了会掉出 GitHub 的 MIT 识别）',
+    /^MIT License\n\nCopyright/.test(rootLic.replace(/\r/g, ''))
+      && !/covers the source code/i.test(rootLic), '根 LICENSE 被改动了');
+  chk('MIT 正文完整',
     /Permission is hereby granted, free of charge/.test(rootLic)
       && /THE SOFTWARE IS PROVIDED "AS IS"/.test(rootLic), '');
+  chk('NOTICE 存在并划清两类东西', !!notice && /Source code/.test(notice) && /All Rights Reserved/.test(notice), '缺文件');
+  chk('NOTICE 点名形象与图标不在 MIT 内',
+    /characters\/\*\*/.test(notice) && /tools\/assets\/\*\*/.test(notice)
+      && /不属于/.test(notice), '没点名');
+  chk('NOTICE 指向两份素材许可',
+    /characters\/LICENSE/.test(notice) && /tools\/assets\/LICENSE/.test(notice), '链接缺失');
+  chk('两份 README 都链到 NOTICE（边界得能被找到）',
+    /\]\(NOTICE\)/.test(zh) && /\]\(NOTICE\)/.test(en), '缺链接');
 }
 
 // 三份许可文件里的相对链接必须真的能打开 —— 之前 tools/assets/LICENSE 里写的 `../LICENSE`
 // 指向 tools/LICENSE（不存在），中英四处全是死链，而且没有任何测试会发现。
 {
-  const files = ['LICENSE', 'characters/LICENSE', 'tools/assets/LICENSE'];
+  const files = ['LICENSE', 'NOTICE', 'characters/LICENSE', 'tools/assets/LICENSE'];
   const broken = [];
   let checked = 0;
   for (const f of files) {
@@ -123,6 +129,13 @@ chk('非商业引用条款两边一致', /非商业/.test(zh) === /non-commercia
   chk('三份许可文件里的相对链接都指向真实文件', broken.length === 0, broken.join(' | '));
   // 别让上面那条空转：一个链接都没扫到的时候，它永远是绿的
   chk(`链接检查确实扫到了链接（${checked} 个）`, checked >= 5, String(checked));
+  // NOTICE 里的路径是裸写的（不带 ../），单独核一遍：它指的这三份必须真的在
+  {
+    const notice = read('NOTICE');
+    const wants = ['LICENSE', 'characters/LICENSE', 'tools/assets/LICENSE'];
+    const miss = wants.filter((p) => !notice.includes(p) || !fs.existsSync(path.join(ROOT, p)));
+    chk('NOTICE 指向的三份许可文件都存在', miss.length === 0, miss.join(','));
+  }
 }
 
 // 条款本身的守卫：这两句是 2026-10-19 补的，改措辞时别把它们弄丢

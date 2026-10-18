@@ -285,6 +285,9 @@ the directories in `native_host.py` and `app/src/main.js` to your own setup.
 
 [Code: MIT](LICENSE) © 2026 visitor257
 
+Which files fall under which terms is spelled out in [NOTICE](NOTICE) — the root LICENSE is **plain
+MIT**, and on its own it reads as if the artwork were MIT too. It is not.
+
 The **source code** (`app/`, `server/`, the scripts in `tools/`, `native_host.py`, …) is MIT-licensed.
 
 **Artwork is not covered — all rights reserved**: `characters/` (portraits `src/*.png`, block frames

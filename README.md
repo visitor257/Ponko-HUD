@@ -251,6 +251,9 @@ SHELL 面板另有一组**内置命令**（在终端中直接输入，不带斜�
 
 [代码 MIT](LICENSE) © 2026 visitor257
 
+哪部分归哪套条款写在 [NOTICE](NOTICE) 里 —— 根 LICENSE 是**标准 MIT**，单看它很容易被
+读成"形象也是 MIT"，其实不是。
+
 **代码**（`app/`、`server/`、`tools/` 里的脚本、`native_host.py` 等）按 MIT 授权。
 
 **美术资源不在其内，保留所有权利**：`characters/`（立绘 `src/*.png`、字符帧 `frames/*`、`pack.json`）
