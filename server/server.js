@@ -858,7 +858,7 @@ function killCommand(sess) {
 // 标记由 moodp.parseInline 剥离。换真 LLM 时，只要把 fakeAgentBody 换成模型输出即可，
 // 前端/主题/角色链路一行都不用改。
 
-const DEFAULT_STATE_INTENSITY = { idle: 0.45, think: 0.6, stream: 0.8, sleepy: 0.2, error: 0.7 };
+const DEFAULT_STATE_INTENSITY = { idle: 0.45, think: 0.6, working: 0.8, sleepy: 0.2, error: 0.7 };
 
 function fakeAgentBody(text) {
   const lower = String(text || '').toLowerCase();
@@ -870,7 +870,7 @@ function fakeAgentBody(text) {
       '判断需要先看真实输出，而不是凭印象猜。\n',
       '[[mood:error|face:error|i:0.7|note:这个报错有点难缠]]\n',
       '日志里确实有异常，我盯一会儿。\n',
-      '[[mood:stream|face:thinking|i:0.8|note:有线索了，先说结论]]\n',
+      '[[mood:working|face:thinking|i:0.8|note:有线索了，先说结论]]\n',
       '问题不在你的代码里。\n\n',
       'AGP 的 path check 在解析中文路径时会直接抛错，这是已知的 AGP 行为。\n\n',
       '两条路：\n',
@@ -883,7 +883,7 @@ function fakeAgentBody(text) {
 
   return [
     '[[mood:think|face:thinking|i:0.55|note:这话里有两层意思]]\n',
-    '[[mood:stream|face:streaming|i:0.75|note:捋一下再说]]\n',
+    '[[mood:working|face:streaming|i:0.75|note:捋一下再说]]\n',
     '我理解你要的是两件事：\n\n',
     '一是界面自己画字符网格，而不是套一个真终端；\n',
     '二是我这边的内部状态要能直接决定角色表情，而不是前端替我猜。\n\n',

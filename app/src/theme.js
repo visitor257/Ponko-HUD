@@ -26,7 +26,8 @@ const BASE = {
 const MOODS = {
   idle:   { accent: rgb(72, 214, 208), land: rgb(46, 176, 168), glow: 0.6 },
   think:  { accent: rgb(240, 186, 80), land: rgb(206, 156, 62), glow: 0.8 },
-  stream: { accent: rgb(96, 232, 128), land: rgb(78, 206, 110), glow: 1.0 },
+  // 2026-10-18 由 stream 改名 working（协议里的原值变，配色不变）。
+  working: { accent: rgb(96, 232, 128), land: rgb(78, 206, 110), glow: 1.0 },
   sleepy: { accent: rgb(158, 130, 240), land: rgb(134, 108, 214), glow: 0.35 },
   // angry 与 error 同属"坏心情"，靠**色温**分开：error 是偏粉的冷红（蔫下去），
   // angry 是饱和的火橙红（烧起来）—— 2026-10-17 加第 6 个 state 时定的。

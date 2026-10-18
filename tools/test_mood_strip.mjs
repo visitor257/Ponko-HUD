@@ -37,17 +37,18 @@ function feed(s, step = 1) {
 
 const CASES = [
   ['标准写法', '[[mood:think|face:thinking|i:0.6|note:让我想想]]正文来了', 'think'],
-  ['全角冒号', '[[mood：stream|face:smile]]正文', 'stream'],
+  // 旧名 'stream'（2026-10-18 改叫 working）：旧对话历史里还留着这种标记，必须照样认
+  ['全角冒号（旧名 stream）', '[[mood：stream|face:smile]]正文', 'working'],
   ['中文逗号分隔', '[[mood:think，face:thinking，i:0.5]]正文', 'think'],
   ['单侧括号', '[mood:idle|face:idle]正文', 'idle'],
   ['中文键名', '[[心情:error|face:error|note:糟了]]正文', 'error'],
   ['state 键名', '[[state:sleepy|face:sleep]]正文', 'sleepy'],
   ['自创 state（猜）', '[[mood:专注|face:thinking]]正文', 'think'],
-  ['自创 state 英文（猜）', '[[mood:explaining|face:streaming]]正文', 'stream'],
+  ['自创 state 英文（猜）', '[[mood:explaining|face:streaming]]正文', 'working'],
   ['自创 state 完全猜不出', '[[mood:zzzqqq|face:smile]]正文', null],
   ['标记前后带空行', '[[mood:think|note:想想]]\n\n正文', 'think'],
   ['嵌套多余空格', '[[ mood : idle | face : idle ]]正文', 'idle'],
-  ['等号分隔', '[[mood=stream|face:smile]]正文', 'stream'],
+  ['等号分隔', '[[mood=working|face:smile]]正文', 'working'],
   ['note 里含全角冒号', '[[mood:idle|note:我说：好了]]正文', 'idle'],
   ['大写的 MOOD', '[[MOOD:idle|face:idle]]正文', 'idle'],
   ['emo 键名', '[[emo:error|note:出错]]正文', 'error'],
@@ -56,8 +57,8 @@ const CASES = [
   ['情绪词·委屈', '[[mood:委屈]]正文', 'error'],
   ['情绪词·被骂', '[[心情：被骂]]正文', 'error'],
   ['情绪词·难过', '[[mood:难过|face:error]]正文', 'error'],
-  ['情绪词·开心', '[[mood:开心|face:streaming]]正文', 'stream'],
-  ['情绪词·得意', '[[mood:得意]]正文', 'stream'],
+  ['情绪词·开心', '[[mood:开心|face:streaming]]正文', 'working'],
+  ['情绪词·得意', '[[mood:得意]]正文', 'working'],
   ['情绪词·被晾', '[[mood:被晾]]正文', 'sleepy'],
   // 生气（angry）与委屈（error）是一对方向相反的坏心情，2026-10-17 拆开后必须各归各位：
   // 混着的话那张生气立绘永远轮不到（模型写"生气"却走到 error 上）。
@@ -149,7 +150,10 @@ for (const [name, body, wantState] of CASES) {
   record('提示词把 STATE 解释成感受而非工作模式', sys.includes('感受') && sys.includes('工作模式'), '');
   record('提示词明确"别什么都回一句平静"', sys.includes('别什么都回一句平静'), '');
   record('被骂 → error 的触发规则在', sys.includes('骂你') && /骂你[^\n]*error/.test(sys), '');
-  record('被夸 → stream 的触发规则在', sys.includes('夸你') && /夸你[^\n]*stream/.test(sys), '');
+  record('被夸 → working 的触发规则在', sys.includes('夸你') && /夸你[^\n]*working/.test(sys), '');
+  // 2026-10-18 改名：提示词里只该出现新名。旧名留给解析器（STATE_ALIAS）认历史，不该再教给模型；
+  // 也防住"把开发注释写进 STATES.hint"—— hint 是整句注入的，写进去模型会当设定念出来。
+  record('提示词里不再出现旧名 stream', !/\bstream\b/.test(sys), '');
 
   // 2026-10-18 用户："我看到有输出「（愣了下，别过脸）」，不要这种动作描绘，这样像写剧本一样"。
   // 禁则必须有，而且**不许带例句** —— 把用户贴的那句写进提示词，模型会原样抄回来
@@ -191,7 +195,7 @@ console.log('\n── ⑨ 提示词：三层拟人 ──');
 
 console.log('\n── ⑩ 情绪记忆：把"此刻的心情"喂回给模型 ──');
 // 之前 mood 标记是"往界面的单行道"（agent.js 发历史前会 stripMood），模型每轮从白纸开始，
-// 只能按"夸→stream / 骂→error"那张表现推 —— 表现就是每轮重置、机械。
+// 只能按"夸→working / 骂→error"那张表现推 —— 表现就是每轮重置、机械。
 {
   const before = moodp.buildSystemPrompt(['idle']);
   record('没给心情 → 不凭空编一段"你此刻的心情"', !before.includes('【你此刻的心情】'), '');
@@ -293,7 +297,7 @@ console.log('\n── ⑬ 加/删一个 state 时最容易漏的几处（2026-10
   // 表情标签是从枚举取的（以前是写死的数组，加 state 时会静默少一个点不到的标签）
   const charSrc = fs.readFileSync(path.join(ROOT, 'app/src/panels/char.js'), 'utf8');
   record('表情标签不再写死数组（从 MOOD_KEYS 取）',
-    /const keys = MOOD_KEYS;/.test(charSrc) && !/\['idle', 'think', 'stream', 'sleepy', 'error'\]/.test(charSrc), '');
+    /const keys = MOOD_KEYS;/.test(charSrc) && !/\['idle', 'think', 'working', 'sleepy', 'angry', 'error'\]/.test(charSrc), '');
 
   // 提示词：模型只能看见这里写的 state，加了状态却没写进来 = 模型永远不会用它
   const sys = moodp.buildSystemPrompt(['idle', 'angry']);

@@ -76,8 +76,10 @@ English version — [中文版 / Chinese version](README.md)
   **Reopening looks exactly like it did when you quit**: the current mood (colour value, portrait face, the
   agent's own line, and its source) travels with the conversation file (`run/conversations/<id>.json`, `mood`
   field) and is restored per conversation on the next launch — so it is still there even after a while away
-  (fixed 2026-10-15). **No state is folded on restore**, including `'stream'` (what the prompt emits for
-  "praised / excited"): whatever it was when you quit is exactly what you get on reopen (fixed 2026-10-18).
+  (fixed 2026-10-15). **No state is folded on restore**, including `'working'` (formerly `stream`; what the
+  prompt emits for "praised / excited"): whatever it was when you quit is exactly what you get on reopen
+  (fixed 2026-10-18). The six states are `idle / think / working / sleepy / angry / error`; `working` covers
+  both "streaming tokens out" and "fired up and getting things done".
   **Only the agent changes the mood** (2026-10-17): there is no "two quiet minutes → doze off" fallback, and a
   declared mood does not expire back to idle on its own — it stays until the agent speaks again. The program only
   touches it in three cases: a new conversation starts idle, a launch restores the mood the agent itself declared,

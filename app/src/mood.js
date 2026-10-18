@@ -17,16 +17,28 @@
 import { t, langOf } from './i18n/index.js';
 
 export const MOOD_STATES = {
-  idle:   { base: 62 },
-  think:  { base: 70 },
-  stream: { base: 88 },
-  sleepy: { base: 30 },
+  idle:    { base: 62 },
+  think:   { base: 70 },
+  // 2026-10-18 用户："把 stream 这个改成 working" —— 它本来就兼着"正在输出"与"来劲"两义，
+  // `stream` 只说得清前一半。改名后协议里的原值就是 working；旧名靠 canonState() 收进来。
+  working: { base: 88 },
+  sleepy:  { base: 30 },
   // base = 心情条的目标高度。生气是**高唤醒**（心跳快、憋着一股劲），所以给高分，
   // 别跟 error(24, 蔫下去) 混为一谈 —— 这俩数值差得越开，"上火"和"低落"在条上越一眼能认。
-  angry:  { base: 78 },
-  error:  { base: 24 },
+  angry:   { base: 78 },
+  error:   { base: 24 },
 };
 export const MOOD_KEYS = Object.keys(MOOD_STATES);
+
+// 旧 state 名 → 现名。目前只有一条：`stream` 在 2026-10-18 改叫 `working`。
+// ⚠ 只在**入口**（agent 声明 / 存档 / 调试旁路 / 本地兜底）做一次翻译，内部一律用新名；
+//   不翻的话，旧对话存档里的 `state:'stream'` 会被 restore 当成非法值整条丢掉 ——
+//   用户当时的心情就这么没了。
+const STATE_RENAMES = { stream: 'working' };
+export function canonState(s) {
+  const k = String(s === undefined || s === null ? '' : s).trim().toLowerCase();
+  return STATE_RENAMES[k] || k;
+}
 
 /**
  * 心情在界面上显示的名字。**来源是角色素材包**，不是语言包（用户 2026-10-17：
@@ -40,10 +52,11 @@ export const MOOD_KEYS = Object.keys(MOOD_STATES);
  * pack 还没扫到（启动最早期）→ 退回 state 本身，绝不拿别的语言顶上。
  *
  * @param {object|null} pack CharPack 实例（允许 null：素材包还没加载完）
- * @param {string} state 心情 state（idle / think / stream / sleepy / angry / error）
+ * @param {string} state 心情 state（idle / think / working / sleepy / angry / error）
  */
 export function moodLabel(pack, state) {
-  const k = MOOD_STATES[state] ? state : 'idle';
+  const st = canonState(state);
+  const k = MOOD_STATES[st] ? st : 'idle';
   if (!pack || !pack.labelOf) return k;
   // 走 stateTag 而不是 tagFor：包没有这个表情时，不拿 idle 的名字顶包（见 stateTag 的注释）
   return pack.labelOf(pack.stateTag(k) || k, langOf()) || k;
@@ -103,7 +116,8 @@ export class Mood {
    * 心情停多久就是多久，直到 agent 下一次开口（2026-10-17："心情应该完全由 agent 控制"）。
    */
   fromAgent(ev = {}) {
-    const s = MOOD_STATES[ev.state] ? ev.state : null;
+    const key = canonState(ev.state);
+    const s = MOOD_STATES[key] ? key : null;
     if (!s) return false;
     const now = performance.now();
     this.state = s;
@@ -131,6 +145,7 @@ export class Mood {
   fromLocal(state, note, ms = 6000) {
     if (this._forced) return;
     if (this.source === 'agent' && performance.now() < this.holdUntil) return;
+    state = canonState(state);
     if (!MOOD_STATES[state]) return;
     this.state = state;
     this.source = 'auto';
@@ -148,6 +163,7 @@ export class Mood {
    *   于是每次开机都重新锁死一颗调试心情，看着像"HUD 自己在手动控制"。
    */
   force(key) {
+    key = canonState(key);
     if (!MOOD_STATES[key]) return;
     this._forced = key;
     this.state = key;
@@ -235,12 +251,14 @@ export class Mood {
   /**
    * 从快照恢复。规矩：
    *   ① state 必须是合法枚举 —— 不合法整条丢弃（宁可回待机，也不要停在不存在状态上）
-   *   ② **原样还原，一个 state 都不折** —— 包括 'stream'。
+   *   ② **原样还原，一个 state 都不折** —— 包括 'working'（2026-10-18 之前叫 'stream'）。
    *      曾经这里把 'stream' 折成 idle，理由是"关掉时那轮输出早结束了，还原成它会让界面
    *      一直停在输出中"。那是有"静默兜底 / 声明过期回落"两条自动路径能收拾局面的年代；
    *      2026-10-17 那两条删掉之后，**折它等于程序替 agent 改心情**，正好违反"心情完全由
    *      agent 控制"。用户 2026-10-18 报的就是这个：「退出时是生气的 mood，重新开 HUD 后
    *      变成待机了」—— 存档里明明写着 stream（提示词里"被夸 / 来劲"就是它），却被折掉。
+   *      ⚠ 改名后旧档里的 'stream' 由 canonState() 翻成 'working' —— 那是**改名**，
+   *      不是"折回待机"，规矩 ② 照样成立。
    *   ③ 「本地兜底让位窗口」（holdUntil）从**开机这一刻**重新计。原来的 holdUntil 是
    *      performance.now() 的刻度，重启后就归零了；按墙上时间算的话，关掉超过 5 分钟再开，
    *      本地兜底立刻就能顶掉 agent 的声明 —— 用户要的恰恰是"和退出前一样"（2026-10-15 报的）。
@@ -251,9 +269,10 @@ export class Mood {
    */
   restore(s) {
     if (!s || typeof s !== 'object') return false;
-    if (!MOOD_STATES[s.state]) return false;
+    const st = canonState(s.state);              // 旧名 stream → working：只翻译，不折回待机
+    if (!MOOD_STATES[st]) return false;
     const now = performance.now();
-    this.state = s.state;                        // 原样还（规矩 ②：连 stream 也不折）
+    this.state = st;                             // 原样还（规矩 ②：连 working 也不折）
     this.face = s.face ? String(s.face) : null;
     const base = MOOD_STATES[this.state].base / 100;
     this.intensity = (typeof s.intensity === 'number' && isFinite(s.intensity))

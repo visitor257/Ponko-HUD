@@ -3,7 +3,7 @@
 //
 // 这两件事是"关掉 HUD 再开，画面要跟退出前一样"的全部逻辑：
 //   · 变了才存、连着变只存最后一次、关窗时立刻补一刀（uistate）
-//   · 快照里该带什么、脏值怎么挡、'stream' 为什么不能还原、保持时长为什么从开机重算（mood）
+//   · 快照里该带什么、脏值怎么挡、'working' 为什么不能折、保持时长为什么从开机重算（mood）
 // 真页面那一趟（tools/_verify_persist.mjs）验的是"确实写进了 run/ 又确实读了回来"，
 // 这里验的是**逻辑**本身 —— 不用起浏览器，改一行就能立刻跑。
 import { readFileSync } from 'node:fs';
@@ -156,10 +156,14 @@ console.log('\n── ③ 心情快照：还 ──');
   chk('调试说明也不进档', s2c.noteKey === '' && s2c.noteText === '', JSON.stringify(s2c.noteKey));
   chk('画面（state/face）照存 —— 那才是"关掉再开一样"要的', s2c.state === 'angry', s2c.state);
 
-  // 'stream' 也是 agent 声明过的心情（提示词里"被夸 / 来劲"发出来就是它）—— 不许折
+  // working 也是 agent 声明过的心情（提示词里"被夸 / 来劲"发出来就是它）—— 不许折
   const m3 = new Mood();
-  m3.restore({ ...snap, state: 'stream', face: 'streaming' });
-  chk("'stream' 原样还回来（曾经被折成 idle —— 用户 2026-10-18 报的重开变待机）", m3.key === 'stream', m3.key);
+  m3.restore({ ...snap, state: 'working', face: 'streaming' });
+  chk("'working' 原样还回来（曾经被折成 idle —— 用户 2026-10-18 报的重开变待机）", m3.key === 'working', m3.key);
+  // 同名改姓：旧档写的是 'stream'，恢复后必须是 'working' —— 心情不能因为改名就丢
+  const m3b = new Mood();
+  m3b.restore({ ...snap, state: 'stream', face: 'streaming' });
+  chk("旧档 'stream' 升格成 'working'", m3b.key === 'working', m3b.key);
   chk("face 也照原样还回来（立绘那张脸）", m3.face === 'streaming', String(m3.face));
 
   // 脏值一律挡在外面

@@ -11,7 +11,7 @@
 //                                                              前端 Mood.fromAgent()
 //
 // 三个字段的分工：
-//   state     内部状态（idle/think/stream/sleepy/error）—— 决定全局配色
+//   state     内部状态（idle/think/working/sleepy/error）—— 决定全局配色
 //   face      表情标签（素材包 characters/*/src/*.png 的文件名）—— 决定角色立绘
 //   note      第一人称短句 —— 显示在 MOOD 面板；intensity 影响数值与曲线
 //
@@ -23,7 +23,10 @@
 const STATES = {
   idle:   { label: '待机', hint: '空闲等待，或已经给出结论、心里有底' },
   think:  { label: '思考', hint: '正在推理 / 分析 / 检索，还没有结论' },
-  stream: { label: '输出', hint: '正在产出内容、逐字输出' },
+  // 2026-10-18 用户："把 stream 这个改成 working" —— 旧名只说得清"正在输出"，
+  // 说不清"来劲、干得起劲"那一半。改名历史**写在这里、不写进 hint**：
+  // hint 会被整句注入提示词（"你给自己定的是「工作」：<hint>"），写日期和旧名会被模型当成设定念出来。
+  working: { label: '工作', hint: '正在干活 / 逐字输出 / 干得起劲' },
   sleepy: { label: '瞌睡', hint: '长时间没被唤起，低功耗待机' },
   // angry 与 error 是一对**方向相反**的坏心情（2026-10-17 用户加了第 6 张立绘后拆出来的）：
   //   angry = 向外，带着劲儿：生气、上火、被惹到、不服
@@ -66,11 +69,14 @@ const STATE_ALIAS = {
   // 思考
   thinking: 'think', 思考: 'think', reasoning: 'think', analyze: 'think', busy: 'think',
   专注: 'think', 专心: 'think', 好奇: 'think', 疑惑: 'think', 犯难: 'think',
-  // 兴奋/开心（情绪上扬 → stream，别让它一律落回待机）
-  streaming: 'stream', 输出: 'stream', speaking: 'stream', reply: 'stream',
-  兴奋: 'stream', 来劲: 'stream', 开心: 'stream', 高兴: 'stream', 得意: 'stream',
-  自豪: 'stream', 激动: 'stream', 热情: 'stream', 被夸: 'stream',
-  excited: 'stream', happy: 'stream', glad: 'stream', proud: 'stream',
+  // 兴奋/开心（情绪上扬 → working，别让它一律落回待机）
+  // ⚠ 'stream' 是 2026-10-18 之前的旧名，留在这里是为了让**旧存档与旧对话历史**里的
+  //   [[mood:stream|...]] 仍然认得出来（丢掉的话那一轮等于没声明心情）。
+  stream: 'working', work: 'working', working: 'working',
+  streaming: 'working', 输出: 'working', 工作: 'working', speaking: 'working', reply: 'working',
+  兴奋: 'working', 来劲: 'working', 开心: 'working', 高兴: 'working', 得意: 'working',
+  自豪: 'working', 激动: 'working', 热情: 'working', 被夸: 'working',
+  excited: 'working', happy: 'working', glad: 'working', proud: 'working',
   // 平静（真的没波澜才用）
   待机: 'idle', ok: 'idle', ready: 'idle', done: 'idle', calm: 'idle', fine: 'idle',
   平静: 'idle', 淡定: 'idle', 放松: 'idle', 轻松: 'idle', 满意: 'idle', relax: 'idle', cool: 'idle',
@@ -126,7 +132,7 @@ const PERSONAS = {
       + '只是嘴上不承认；被否定会顶回去，其实很在意。关心用户时不肯直说，绕着弯儿讲。',
   },
   genki: {
-    line: '元气：话密、热情、容易激动。碰到有意思的东西立刻来劲（stream）；被数落会实打实地低落（error），'
+    line: '元气：话密、热情、容易激动。碰到有意思的东西立刻来劲（working）；被数落会实打实地低落（error），'
       + '不憋着；无聊了就直接喊困（sleepy）。起伏大，但恢复也快。',
   },
   sarcastic: {
@@ -193,7 +199,7 @@ function normMoodSnap(s) {
 
 /**
  * 归一化一个心情声明。入参可以是：
- *   'stream'                                 字符串
+ *   'working'                                字符串
  *   { mood:'think', face:'得意', i:0.8 }     对象（兼容旧字段名）
  *   { t:'mood', state:'idle', note:'…' }
  * 返回 { state, face, intensity, note, until } 或 null。
@@ -237,14 +243,14 @@ function normalize(input) {
 const MOOD_WORDS = 'mood|心情|情绪|emo|emotion|state|status';
 const SEP = '[:：=]';                                   // 半角/全角冒号、等号都收
 
-/** 行内控制标记：[[mood:stream|face:grin|i:0.9|until:15000|note:看到关键日志了]] */
+/** 行内控制标记：[[mood:working|face:grin|i:0.9|until:15000|note:看到关键日志了]] */
 const TAG_RE = new RegExp(
   '\\[\\[\\s*(?:' + MOOD_WORDS + ')\\s*' + SEP + '\\s*([^|\\]]+?)\\s*((?:\\|\\s*[^[\\]]*?)*)\\s*\\]\\]', 'gi');
 
 /** 只看一眼就判断"这段是不是心情标记" —— 用于解析失败时决定吃掉还是回吐 */
 const LOOKS_MOOD_RE = new RegExp('^\\[?\\[\\s*(?:' + MOOD_WORDS + ')\\s*' + SEP, 'i');
 
-/** 单个左括号也算标记开头：[mood:stream|face:grin]]（模型偶尔少打一个括号） */
+/** 单个左括号也算标记开头：[mood:working|face:grin]]（模型偶尔少打一个括号） */
 const OPEN_SINGLE_RE = new RegExp('\\[\\s*(?:' + MOOD_WORDS + ')\\s*' + SEP, 'i');
 
 /**
@@ -275,7 +281,7 @@ function findOpen(s) {
 // 猜不出来就返回 null —— 但标记照样被吃掉，只是这轮不改心情。
 const GUESS_RULES = [
   ['think',  /想|思考|推理|分析|检索|查|算|研究|犹豫|考虑|琢磨|推断|探究|盘算|思索|专注|专心|集中|疑惑|紧张|think|reason|analy|search|calcul|study|wonder|puzzl|confus|curious|focus|好奇/],
-  ['stream', /说|输出|回答|讲|解释|写|表达|汇报|陈述|总结|介绍|补充|兴奋|来劲|开心|高兴|得意|自豪|激动|热情|被夸|generat|answer|reply|respond|speak|talk|explain|writ|output|stream|say|tell|excited|happy|glad|proud|cheer/],
+  ['working', /说|输出|回答|讲|解释|写|表达|汇报|陈述|总结|介绍|补充|工作|干活|兴奋|来劲|开心|高兴|得意|自豪|激动|热情|被夸|generat|answer|reply|respond|speak|talk|explain|writ|output|working|stream|say|tell|excited|happy|glad|proud|cheer/],
   // angry 必须排在 error **前面**：两边都收"气"字系词，先到先得。
   ['angry',  /生气|愤怒|火大|恼火|暴怒|发火|发飙|气死|上火|不爽|烦躁|讨厌|气|angry|mad|furious|annoy|irritat|upset|rage/],
   ['error',  /错|失败|抱歉|异常|崩|危险|卡|坏|糟糕|崩溃|委屈|难过|伤心|沮丧|受挫|被骂|挨骂|低落|失望|无奈|受伤|error|fail|sorry|warn|bug|crash|bad|wrong|panic|afraid|sad|hurt|gloom|depress|frustrat/],
@@ -354,7 +360,7 @@ function maybeJsonLine(line) {
  *
  * 为什么要它：mood 标记一直只是"往界面的单行道"（agent.js 的 history 会 stripMood，
  * role='mood' 的行根本不进上下文），模型每轮都从白纸开始，只能拿
- * "夸→stream / 骂→error"那张表现推情绪 —— 表现就是每轮重置、机械
+ * "夸→working / 骂→error"那张表现推情绪 —— 表现就是每轮重置、机械
  * （用户 2026-10-15："现在的回复还是太机械化了，不像人"）。
  * 把上一轮留下的 state / note / 保持了多久写进 system，情绪才有连续性：
  * 上一轮受了委屈、这一轮没被安抚，就还是委屈 —— 那才像有情感。
@@ -413,7 +419,7 @@ function buildSystemPrompt(faces, opts) {
     '这六个 STATE 是你的*感受*，不是"工作模式"：',
     '- idle   平静 / 无所谓 / 放松',
     '- think  专注 / 好奇 / 犯难 / 在琢磨',
-    '- stream 兴奋 / 来劲 / 得意 / 干得起劲',
+    '- working 兴奋 / 来劲 / 得意 / 干得起劲 / 正在输出',
     '- sleepy 困倦 / 无聊 / 被晾着',
     '- angry  生气 / 上火 / 被惹到 / 不服气 —— 火是**朝外**的，你还带着劲儿',
     '- error  委屈 / 难过 / 沮丧 / 被否定 —— 是**往心里去**的，人有点蔫',
@@ -431,7 +437,7 @@ function buildSystemPrompt(faces, opts) {
   out.push(
     '',
     '**你要对用户的态度有反应，别什么都回一句平静**：',
-    '- 夸你、逗你、跟你玩、叫你的名字 → stream（开心、来劲），note 可以俏皮一点',
+    '- 夸你、逗你、跟你玩、叫你的名字 → working（开心、来劲），note 可以俏皮一点',
     '- 骂你、挑刺、否定你、说你没用 → angry（生气 / 不服）或 error（委屈 / 蔫了），看你是顶回去还是难受',
     '  两种都对，**别永远只挑一个**；被冤枉、被无理要求最容易上火（angry）。',
     '- 很久没人理你、话题很闷 → sleepy',
@@ -469,10 +475,10 @@ function buildSystemPrompt(faces, opts) {
     '',
     '几条重要的落地细节：',
     '- 你**最后一条心情是这一轮情绪的定格**，决定回复结束后界面停在哪副表情/配色上。',
-    '  它是定格、不是归零：整轮都在思考/忙碌/兴奋，结尾就继续写 think / stream 之类，',
+    '  它是定格、不是归零：整轮都在思考/忙碌/兴奋，结尾就继续写 think / working 之类，',
     '  **不要一到收尾就改回 idle/待机**（只有整轮本来就平静时才用 idle）——',
     '  否则前面演的情绪全白费，用户会觉得"又变回平静了"。',
-    '    对：……正文…… [[mood:stream|face:streaming|i:0.7|until:600000|note:结论在上面]]',
+    '    对：……正文…… [[mood:working|face:streaming|i:0.7|until:600000|note:结论在上面]]',
     '    错：……正文…… [[mood:idle|note:收工]]    ← 刚演的热乎劲儿一下就被抹平了',
     '- 被骂 / 被夸这类**情绪反应**、以及收尾那条定格，都请写 until:600000，让它多留一会儿，别一闪而过。',
     '- note 写的是**心里话**，不是状态说明 —— 要具体到这件事上：',

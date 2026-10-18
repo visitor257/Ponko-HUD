@@ -99,7 +99,7 @@ console.log('\n── 收尾心情落地 ──');
   const realFetch = globalThis.fetch;
   const enc = new TextEncoder();
   const LINES = [
-    JSON.stringify({ t: 'mood', state: 'stream', note: '开始输出' }),
+    JSON.stringify({ t: 'mood', state: 'working', note: '开始输出' }),
     JSON.stringify({ t: 'token', text: '你好' }),
     JSON.stringify({ t: 'done', tokens: 2, mood: { state: 'idle', face: 'smile', note: '收工' } }),
   ];
@@ -119,7 +119,7 @@ console.log('\n── 收尾心情落地 ──');
   a.send('你好');
   await new Promise((r) => setTimeout(r, 80));      // 等假流走完
 
-  record('流中的心情照旧落地', applied[0] && applied[0].state === 'stream', JSON.stringify(applied[0]));
+  record('流中的心情照旧落地', applied[0] && applied[0].state === 'working', JSON.stringify(applied[0]));
   record('done 的收尾心情也落地了', applied.length >= 2 && applied[applied.length - 1].state === 'idle',
     JSON.stringify(applied.map((x) => x.state)));
   record('收尾心情带上了 face/note', applied[applied.length - 1].face === 'smile' && applied[applied.length - 1].note === '收工',

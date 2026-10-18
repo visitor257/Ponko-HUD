@@ -20,7 +20,8 @@ import { rgb } from './grid.js';
 const ALIAS = {
   idle: ['idle', '待机', 'normal', 'default'],
   think: ['thinking', 'think', '思考'],
-  stream: ['streaming', 'stream', '输出', 'talk'],
+  // working 是 2026-10-18 从 stream 改的名；'stream' 留着让旧素材包 / 旧存档照样能对上表情。
+  working: ['streaming', 'working', 'stream', '输出', 'talk'],
   sleepy: ['sleepy', '瞌睡', 'sleep'],
   angry: ['angry', '生气', '愤怒', 'mad'],
   error: ['error', '出错', 'sad'],

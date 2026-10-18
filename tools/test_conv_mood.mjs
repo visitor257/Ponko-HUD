@@ -45,14 +45,14 @@ console.log('\n── ② 对话之间互不串（后台的流不改前台的脸
   const c1 = a.tabs[0];
   c1.mood.fromAgent({ state: 'angry', intensity: 0.9, note: '生气' });
   const c2 = a.newTab(true);
-  c2.mood.fromAgent({ state: 'stream', intensity: 1, note: '兴奋' });
+  c2.mood.fromAgent({ state: 'working', intensity: 1, note: '兴奋' });
 
-  chk('在 B 里改成 stream，A 仍是 angry', states(c1) === 'angry', states(c1));
-  chk('B 自己是 stream', states(c2) === 'stream', states(c2));
+  chk('在 B 里改成 working，A 仍是 angry', states(c1) === 'angry', states(c1));
+  chk('B 自己是 working', states(c2) === 'working', states(c2));
   // 后台对话（非当前活动）收到心情声明，不该落到前台的视图上
   a.selectTab(0);
   chk('切回 A：活动对话是 A', a.tab === c1, a.tab === c1);
-  chk('切回 A 时屏幕心情 = A 的 angry（不是 B 的 stream）', a.activeMood().state === 'angry', a.activeMood().state);
+  chk('切回 A 时屏幕心情 = A 的 angry（不是 B 的 working）', a.activeMood().state === 'angry', a.activeMood().state);
 }
 
 console.log('\n── ③ 屏幕那层视图（moodView）跟着当前对话换人 ──');
@@ -118,9 +118,12 @@ console.log('\n── ⑤ 存档往返：心情跟着对话文件走 ──');
   chk('心里话也还回来了', conv.mood.noteText === '存档里的话', conv.mood.noteText);
   chk('没给快照 → 待机（老存档没有 mood 字段时的行为）', new AgentConv('c-2', 1).mood.state === 'idle', '');
 
-  // 'stream' 也是 agent 声明过的心情（"被夸 / 来劲"）—— 关掉再开必须还是它
-  const s2 = new AgentConv('c-3', 0, { ...snap, state: 'stream' });
-  chk('快照里的 stream 原样还原（不许折成待机）', s2.mood.state === 'stream', s2.mood.state);
+  // working 也是 agent 声明过的心情（"被夸 / 来劲"）—— 关掉再开必须还是它
+  const s2 = new AgentConv('c-3', 0, { ...snap, state: 'working' });
+  chk('快照里的 working 原样还原（不许折成待机）', s2.mood.state === 'working', s2.mood.state);
+  // 2026-10-18 改名：旧存档里还写着 'stream'，读回来要变成 'working'（不是丢掉、更不是回待机）
+  const s2b = new AgentConv('c-3b', 0, { ...snap, state: 'stream' });
+  chk('旧档里的 stream 升格成 working（不是丢弃、也不是待机）', s2b.mood.state === 'working', s2b.mood.state);
 
   // manual（调试旁路）不许被存档粘住 —— 2026-10-17「手动·生气」那次的教训
   const man = new AgentConv('c-4', 0, { ...snap, source: 'manual', noteKey: 'ui.mood.manualOverride' });
