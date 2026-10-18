@@ -12,7 +12,7 @@ them), and any future packs.
 These files are NOT covered by the MIT license that applies to the source
 code of Ponko HUD (see ../LICENSE).
 
-You may:
+You may — for personal, non-commercial use only:
 
   - run Ponko HUD with these assets as shipped;
   - build it from source for your own private use, and use that build
@@ -37,8 +37,11 @@ You may not:
     free. You may build and run it for yourself; you may not hand the build
     to anyone else, or upload it to an app store, package registry, download
     site or any other distribution channel;
-  - use the artwork for any commercial purpose without the author's prior
-    written permission (ask through the project repository);
+  - use the artwork for any commercial purpose. Commercial use is not
+    permitted at all: this license grants no commercial rights, and there is
+    no permission to ask for. It covers — without limitation — advertising,
+    paid or monetised products and services, sponsored or affiliate content,
+    work done for a client, and use inside a for-profit company;
   - modify it, recolor it, redraw it, or use it as a base for derivative
     work — avatars, banners, video thumbnails or covers, merchandise, other
     characters;
@@ -46,9 +49,8 @@ You may not:
     format, including repackaged asset collections — the non-commercial
     quoting allowed above is the only exception.
 
-Any other use, including non-commercial uses that go beyond what is spelled
-out above, needs the author's permission: ask through the project repository
-first.
+Any use that goes beyond what is spelled out above — commercial or not — is
+not permitted by this license.
 
 All rights not expressly granted above are reserved by the author.
 
@@ -60,7 +62,7 @@ Ponko HUD 的角色形象素材：src/ 里的原图、frames/ 里由它们生成
 
 这些文件**不适用** Ponko HUD 源码的 MIT 许可（见 ../LICENSE）。
 
-你可以：
+你可以（**仅限个人、非商业用途**）：
 
   - 按原样运行 Ponko HUD 并使用这些素材；
   - 从源码自行构建，供**自己**使用；
@@ -77,12 +79,14 @@ Ponko HUD 的角色形象素材：src/ 里的原图、frames/ 里由它们生成
     APK、AAB、压缩包、安装程序等一切可安装形态 —— 无论是否同时公开源码，
     也无论是否免费提供。你可以自己构建自己用，但不可以把构建结果交给别人，
     也不可以上传到应用商店、软件包仓库、下载站或任何其他分发渠道；
-  - 未经作者书面许可将素材用于任何商业用途（可先在仓库开 issue 联系）；
+  - 将素材用于任何商业用途。**商业使用一律不允许**：本许可不授予任何商业权利，
+    也没有"申请一下就能商用"这回事。包括但不限于广告、付费或可变现的产品与服务、
+    带推广或返利的内容、为客户做的活，以及在营利性公司内部使用；
   - 修改、改色、重绘，或作为衍生作品的素材 —— 头像、横幅、视频封面或缩略图、
     周边、其他角色；
   - 把素材从本项目里摘出来，以任何格式单独再分发（包括打包成素材集）——
     上面明文允许的非商业引用是唯一例外。
 
-超出上面明文范围的其它用途（包括非商业用途）：请先在仓库开 issue 征得同意。
+超出上面明文范围的任何用途（无论商业与否），本许可都不允许。
 
 上面没有明确授予的权利，一律保留。

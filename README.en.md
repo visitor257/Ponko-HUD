@@ -294,19 +294,20 @@ The **source code** (`app/`, `server/`, the scripts in `tools/`, `native_host.py
 `frames/*`, `pack.json`) under [characters/LICENSE](characters/LICENSE), and `tools/assets/`
 (application icons) under [tools/assets/LICENSE](tools/assets/LICENSE). Both carry the same terms:
 
-- **You may**: run the project, build it from source for your own use, keep the artwork inside a
-  fork or clone (that means publishing the fork's source, not shipping builds), show screenshots or
-  recordings, and quote it unmodified with credit in non-commercial writing that introduces,
-  reviews or references Ponko HUD.
+- **You may** — personal, non-commercial use only: run the project, build it from source for your
+  own use, keep the artwork inside a fork or clone (that means publishing the fork's source, not
+  shipping builds), show screenshots or recordings, and quote it unmodified with credit in
+  non-commercial writing that introduces, reviews or references Ponko HUD.
 - **You may not**: distribute any build, package, installer or store submission that contains the
   artwork — an APK, AAB, zip or any other installable form of this project or of a fork, free or
-  paid, whether or not the source is published alongside it; use it commercially; modify, recolor,
-  redraw or build derivative work from it (avatars, banners, covers or thumbnails, merchandise,
-  other characters); extract it and redistribute it on its own (the non-commercial quoting above is
-  the only exception).
+  paid, whether or not the source is published alongside it; **use it commercially in any form —
+  not permitted at all**, the artwork licence grants no commercial rights and there is nothing to
+  ask for; modify, recolor, redraw or build derivative work from it (avatars, banners, covers or
+  thumbnails, merchandise, other characters); extract it and redistribute it on its own (the
+  non-commercial quoting above is the only exception).
 
-For commercial use or anything else, open an issue first. The bundled Klingon font under
-`app/assets/fonts/` is distributed under the SIL OFL, with its license text alongside.
+Anything beyond the non-commercial uses listed above is not permitted. The bundled Klingon font
+under `app/assets/fonts/` is distributed under the SIL OFL, with its license text alongside.
 
 "Ponko" is the name of this project; all rights in the name and in the artwork are reserved by the
 author. Neither may be used in a way that suggests the author endorsed or authorised your product.

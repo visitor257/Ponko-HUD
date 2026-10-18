@@ -158,6 +158,20 @@ chk('非商业引用条款两边一致', /非商业/.test(zh) === /non-commercia
   // 录像可以、截帧当封面不行：这条不明说的话，两个允许/禁止读起来就是矛盾的
   chk('「录像可以、截帧当封面不行」两边都说清了',
     /截出来当封面/.test(artLic) && /frame out of that footage/i.test(artLic), '');
+  // 2026-10-19 用户明确：**不允许商业使用** —— 不是"经作者书面许可可以商用"。
+  // 那种写法读起来就是"问一声/交钱就能用"，与实际意图相反；四份文本都必须把口子焊死。
+  const notice = read('NOTICE');
+  const noAsk = (s) => !/prior written permission|未经作者书面许可|open an issue first|开 issue 问一声/i.test(s);
+  chk('四份文本都把商业使用写成"一律不允许"',
+    /Commercial use is\s+not\s+permitted at all/.test(artLic) && /商业使用一律不允许/.test(artLic)
+      && /no commercial rights/i.test(iconLic) && /商业使用一律不允许/.test(iconLic)
+      && /Commercial use is\s+not\s+permitted at all/.test(notice) && /商业使用一律不允许/.test(notice)
+      && /商业使用一律不允许/.test(zh) && /not\s+permitted at all/i.test(en), '有文件没写死');
+  chk('不再保留"申请/询问后即可商用"的口子',
+    noAsk(artLic) && noAsk(iconLic) && noAsk(notice) && noAsk(zh) && noAsk(en), '还留着口子');
+  chk('素材许可把授权范围限定为个人、非商业用途',
+    /personal, non-commercial use only/i.test(artLic) && /仅限个人、非商业用途/.test(artLic)
+      && /personal, non-commercial use only/i.test(iconLic) && /仅限个人、非商业用途/.test(iconLic), '');
 }
 
 console.log(`\n${failed ? failed + ' 项失败' : '全部通过'}`);
