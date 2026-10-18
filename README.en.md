@@ -195,6 +195,7 @@ app/src/i18n/   language packs: index.js t() entry + zh-cn.js (Simplified Chines
   + assets/fonts/pIqaD-qolqoS.ttf (Klingon script font, SIL OFL, redistributed unmodified)
 server/         backend: server.js HTTP service, bootlog.js boot records, pty.js PTY management, ptybridge.py Windows ConPTY bridge
 characters/     character assets (src/*.png artwork + frames/*.ans|json block frames); artwork is all rights reserved, not MIT (characters/LICENSE)
+tools/assets/   application icons (.ico + sized png); artwork too, all rights reserved (tools/assets/LICENSE)
 native_host.py  pywebview native window host
 run/            runtime artefacts (saved conversations, ui-state.json UI state, boot.log, host.log): git-ignored, **never committed**
 ```
@@ -280,11 +281,23 @@ the directories in `native_host.py` and `app/src/main.js` to your own setup.
 
 [Code: MIT](LICENSE) © 2026 visitor257
 
-The **source code** (`app/`, `server/`, `tools/`, `native_host.py`, …) is MIT-licensed.
-The **character artwork is not**: everything under `characters/` (`src/*.png`, `frames/*`,
-`pack.json`) is **all rights reserved** — see [characters/LICENSE](characters/LICENSE).
-It may run with the project and stay inside a fork or clone, but it must not be extracted and
-redistributed on its own, modified, or used commercially. For anything else, open an issue first.
+The **source code** (`app/`, `server/`, the scripts in `tools/`, `native_host.py`, …) is MIT-licensed.
+
+**Artwork is not covered — all rights reserved**: `characters/` (portraits `src/*.png`, block frames
+`frames/*`, `pack.json`) under [characters/LICENSE](characters/LICENSE), and `tools/assets/`
+(application icons) under [tools/assets/LICENSE](tools/assets/LICENSE). Both carry the same terms:
+
+- **You may**: run the project, keep the artwork inside a fork or clone, show screenshots or
+  recordings, and quote it unmodified with credit in non-commercial writing that introduces,
+  reviews or references Ponko HUD.
+- **You may not**: use it commercially; modify, recolor, redraw or build derivative work from it
+  (avatars, banners, merchandise, other characters); extract it and redistribute it on its own.
+
+For commercial use or anything else, open an issue first. The bundled Klingon font under
+`app/assets/fonts/` is distributed under the SIL OFL, with its license text alongside.
+
+"Ponko" is the name of this project; all rights in the name are reserved by the author
+(no trademark registration has been filed).
 
 `characters/ponko/` holds the **shipping character artwork**: the six images in `src/`
 (`idle / thinking / streaming / sleepy / angry / error`) map to the mood face tags, and `frames/` holds the

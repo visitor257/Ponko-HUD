@@ -74,8 +74,12 @@ chk(`中文版确实是中文（${zhCjk} 个汉字）`, zhCjk > 500, String(zhCj
 chk('两份都链到根 LICENSE（代码）', /\]\(LICENSE\)/.test(zh) && /\]\(LICENSE\)/.test(en), '一处缺失');
 // 形象不在 MIT 内（2026-10-18 用户明确）：README 必须把这条边界写出来，并链到那份说明
 chk('两份都说明形象另有授权', /characters\/LICENSE/.test(zh) && /characters\/LICENSE/.test(en), '缺形象授权说明');
+// 应用图标同样是美术资源，别只写了立绘就当成写全了（MIT 默认会连图标一起覆盖）
+chk('两份都把应用图标划出 MIT', /tools\/assets\/LICENSE/.test(zh) && /tools\/assets\/LICENSE/.test(en), '缺图标授权说明');
 chk('中文明说形象保留所有权利', /保留所有权利/.test(zh), '没写清楚');
 chk('英文同样说清形象另有授权', /all rights reserved/i.test(en), '没写清楚');
+// 两份声明的一致性：非商业引用条款要么都有，要么都没有，别一边允许一边禁止
+chk('非商业引用条款两边一致', /非商业/.test(zh) === /non-commercial/i.test(en), '两边不一致');
 
 console.log(`\n${failed ? failed + ' 项失败' : '全部通过'}`);
 process.exit(failed ? 1 : 0);

@@ -10,18 +10,25 @@ frames/ (the .ans, .json, pack.json and preview.html files derived from
 them), and any future packs.
 
 These files are NOT covered by the MIT license that applies to the source
-code of Ponko HUD (see ../LICENSE). No permission is granted to copy them
-out, modify them, redistribute them, sublicense them, sell them, or use them
-in derivative works — commercial or otherwise.
+code of Ponko HUD (see ../LICENSE).
 
-What you may do:
+You may:
 
   - run Ponko HUD with these assets as shipped;
   - keep them inside a fork or clone of this repository, as long as they are
     not separated from the project and redistributed on their own;
-  - show screenshots or recordings of the running application.
+  - show screenshots or recordings of the running application;
+  - quote the artwork unmodified, with credit to the project, in
+    non-commercial writing that introduces, reviews or references Ponko HUD.
 
-For anything else, open an issue on the repository and ask first.
+You may not:
+
+  - use the artwork for any commercial purpose without the author's prior
+    written permission (ask through the project repository);
+  - modify it, recolor it, redraw it, or use it as a base for derivative
+    work — avatars, banners, video thumbnails, merchandise, other characters;
+  - extract it from this project and redistribute it on its own, in any
+    format, including repackaged asset collections.
 
 --------------------------------------------------------------------------
 
@@ -29,13 +36,18 @@ For anything else, open an issue on the repository and ask first.
 Ponko HUD 的角色形象素材：src/ 里的原图、frames/ 里由它们生成的方块字符帧
 与元数据（.ans、.json、pack.json、preview.html），以及以后新增的包。
 
-这些文件**不适用** Ponko HUD 源码的 MIT 许可（见 ../LICENSE）。未授予任何
-复制、修改、再分发、再许可、销售或用于衍生作品的许可，商业用途与否皆同。
+这些文件**不适用** Ponko HUD 源码的 MIT 许可（见 ../LICENSE）。
 
 你可以：
 
   - 按原样运行 Ponko HUD 并使用这些素材；
   - 在 fork 或克隆的本仓库里保留它们，前提是它们没有被单独摘出来再分发；
-  - 展示运行中应用的截图或录像。
+  - 展示运行中应用的截图或录像；
+  - 在**非商业**的介绍、评测、引用文章里贴出**未经修改**的素材，并注明出处。
 
-其他用途请先在仓库开 issue 询问。
+你不可以：
+
+  - 未经作者书面许可将素材用于任何商业用途（可先在仓库开 issue 联系）；
+  - 修改、改色、重绘，或作为衍生作品的素材 —— 头像、横幅、视频封面、
+    周边、其他角色；
+  - 把素材从本项目里摘出来，以任何格式单独再分发（包括打包成素材集）。

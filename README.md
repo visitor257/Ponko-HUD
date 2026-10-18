@@ -174,6 +174,7 @@ app/src/i18n/   语言包：index.js 的 t() 入口 + zh-cn.js（简中，ui.*/b
   + assets/fonts/pIqaD-qolqoS.ttf（克林贡文字体，SIL OFL，随包分发）
 server/         后端：server.js HTTP 服务、bootlog.js 启动记录、pty.js PTY 管理、ptybridge.py Windows ConPTY 桥
 characters/     角色素材（src/*.png 高清立绘 + frames/*.ans|json 字符帧）；美术素材保留所有权利，不在 MIT 内（characters/LICENSE）
+tools/assets/   应用图标（.ico + 各尺寸 png）；同为美术素材，保留所有权利（tools/assets/LICENSE）
 native_host.py  pywebview 原生窗口宿主
 run/            运行时产物（对话存档、ui-state.json 界面状态、boot.log、host.log）：已在 .gitignore 中排除，**不进仓库**
 ```
@@ -247,10 +248,20 @@ SHELL 面板另有一组**内置命令**（在终端中直接输入，不带斜�
 
 [代码 MIT](LICENSE) © 2026 visitor257
 
-**代码**（`app/`、`server/`、`tools/`、`native_host.py` 等）按 MIT 授权。
-**角色形象不在其内**：`characters/` 下的全部美术素材（`src/*.png`、`frames/*`、`pack.json`）
-**保留所有权利**，见 [characters/LICENSE](characters/LICENSE)。它可以随本项目一起运行、可以留在
-fork / 克隆里，但不得单独摘出来再分发、二创或商用。别的用途先在仓库开 issue 问一声。
+**代码**（`app/`、`server/`、`tools/` 里的脚本、`native_host.py` 等）按 MIT 授权。
+
+**美术资源不在其内，保留所有权利**：`characters/`（立绘 `src/*.png`、字符帧 `frames/*`、`pack.json`）
+见 [characters/LICENSE](characters/LICENSE)，`tools/assets/`（应用图标）见
+[tools/assets/LICENSE](tools/assets/LICENSE)。两处条款相同，简言之：
+
+- **可以**：随本项目运行、留在 fork / 克隆里、展示应用截图或录像；在**非商业**的介绍 / 评测 / 引用里
+  贴出**未经修改**的素材并注明出处
+- **不可以**：商用；修改、改色、重绘或做成衍生作品（头像、封面、周边、其他角色）；单独摘出来再分发
+
+商用或别的用途，先在仓库开 issue 问一声。随包的克林贡字体 `app/assets/fonts/` 按 SIL OFL 分发
+（许可证文本跟字体放在一起）。
+
+「Ponko」是项目名，名称相关权利归作者所有（未申请商标）。
 
 `characters/ponko/` 是**正式角色形象**：`src/` 里 6 张图（`idle / thinking / streaming / sleepy / angry / error`）
 对应心情的 6 个 face 标签，`frames/` 是 `tools/charpack.py` 转出来的方块字符帧。
