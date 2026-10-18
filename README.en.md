@@ -291,17 +291,21 @@ The **source code** (`app/`, `server/`, the scripts in `tools/`, `native_host.py
 `frames/*`, `pack.json`) under [characters/LICENSE](characters/LICENSE), and `tools/assets/`
 (application icons) under [tools/assets/LICENSE](tools/assets/LICENSE). Both carry the same terms:
 
-- **You may**: run the project, keep the artwork inside a fork or clone, show screenshots or
+- **You may**: run the project, build it from source for your own use, keep the artwork inside a
+  fork or clone (that means publishing the fork's source, not shipping builds), show screenshots or
   recordings, and quote it unmodified with credit in non-commercial writing that introduces,
   reviews or references Ponko HUD.
-- **You may not**: use it commercially; modify, recolor, redraw or build derivative work from it
-  (avatars, banners, merchandise, other characters); extract it and redistribute it on its own.
+- **You may not**: distribute any build, package, installer or store submission that contains the
+  artwork — an APK, AAB, zip or any other installable form of this project or of a fork, free or
+  paid, whether or not the source is published alongside it; use it commercially; modify, recolor,
+  redraw or build derivative work from it (avatars, banners, merchandise, other characters);
+  extract it and redistribute it on its own.
 
 For commercial use or anything else, open an issue first. The bundled Klingon font under
 `app/assets/fonts/` is distributed under the SIL OFL, with its license text alongside.
 
-"Ponko" is the name of this project; all rights in the name are reserved by the author
-(no trademark registration has been filed).
+"Ponko" is the name of this project; all rights in the name and in the artwork are reserved by the
+author. Neither may be used in a way that suggests the author endorsed or authorised your product.
 
 `characters/ponko/` holds the **shipping character artwork**: `src/` has 7 images — one per state.
 ⚠ The asset **tags** (file names) do not exactly match the state names: the `working` image is called

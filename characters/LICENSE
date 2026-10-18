@@ -15,14 +15,25 @@ code of Ponko HUD (see ../LICENSE).
 You may:
 
   - run Ponko HUD with these assets as shipped;
+  - build it from source for your own private use, and use that build
+    yourself;
   - keep them inside a fork or clone of this repository, as long as they are
-    not separated from the project and redistributed on their own;
+    not separated from the project and redistributed on their own — keeping
+    them in a fork covers publishing the fork's source, not shipping builds
+    (see the first item under "You may not");
   - show screenshots or recordings of the running application;
   - quote the artwork unmodified, with credit to the project, in
     non-commercial writing that introduces, reviews or references Ponko HUD.
 
 You may not:
 
+  - distribute any build, package, installer or store submission that
+    contains the artwork. This covers an APK, AAB, zip, installer or any
+    other installable form of this project or of a fork, whether or not the
+    source is published alongside it, and whether or not it is offered for
+    free. You may build and run it for yourself; you may not hand the build
+    to anyone else, or upload it to an app store, package registry, download
+    site or any other distribution channel;
   - use the artwork for any commercial purpose without the author's prior
     written permission (ask through the project repository);
   - modify it, recolor it, redraw it, or use it as a base for derivative
@@ -41,12 +52,19 @@ Ponko HUD 的角色形象素材：src/ 里的原图、frames/ 里由它们生成
 你可以：
 
   - 按原样运行 Ponko HUD 并使用这些素材；
-  - 在 fork 或克隆的本仓库里保留它们，前提是它们没有被单独摘出来再分发；
+  - 从源码自行构建，供**自己**使用；
+  - 在 fork 或克隆的本仓库里保留它们，前提是它们没有被单独摘出来再分发。
+    在 fork 里保留，指的是把 fork 的**源码**公开发布，**不包括**把构建产物发出去
+    （见下方"你不可以"第一条）；
   - 展示运行中应用的截图或录像；
   - 在**非商业**的介绍、评测、引用文章里贴出**未经修改**的素材，并注明出处。
 
 你不可以：
 
+  - 分发任何包含这些素材的构建产物、安装包或商店提交物。包括本项目或 fork 打出来的
+    APK、AAB、压缩包、安装程序等一切可安装形态 —— 无论是否同时公开源码，
+    也无论是否免费提供。你可以自己构建自己用，但不可以把构建结果交给别人，
+    也不可以上传到应用商店、软件包仓库、下载站或任何其他分发渠道；
   - 未经作者书面许可将素材用于任何商业用途（可先在仓库开 issue 联系）；
   - 修改、改色、重绘，或作为衍生作品的素材 —— 头像、横幅、视频封面、
     周边、其他角色；
