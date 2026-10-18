@@ -81,5 +81,71 @@ chk('英文同样说清形象另有授权', /all rights reserved/i.test(en), '�
 // 两份声明的一致性：非商业引用条款要么都有，要么都没有，别一边允许一边禁止
 chk('非商业引用条款两边一致', /非商业/.test(zh) === /non-commercial/i.test(en), '两边不一致');
 
+// ── 2026-10-19：授权文本自身的守卫 ────────────────────────────────────────
+// 起因：根 LICENSE 是裸 MIT，字面上把 characters/ 也覆盖了 —— 子目录那份 "All Rights Reserved"
+// 收不回根 MIT 已授出的权利，GitHub 侧栏也照旧认成 MIT。范围必须在根 LICENSE 里切开。
+{
+  const rootLic = read('LICENSE');
+  chk('根 LICENSE 声明了适用范围（只覆盖源码）',
+    /covers the source code/i.test(rootLic) && !/covers the whole repository/i.test(rootLic), '');
+  chk('根 LICENSE 指名把形象与图标排除在外',
+    /characters\/\*\*/.test(rootLic) && /tools\/assets\/\*\*/.test(rootLic), '没点名');
+  chk('根 LICENSE 指向两份素材许可',
+    /characters\/LICENSE/.test(rootLic) && /tools\/assets\/LICENSE/.test(rootLic), '链接缺失');
+  // MIT 正文没有被改坏（GitHub 要能继续识别成 MIT），只是前面多了一段范围声明
+  chk('MIT 正文仍然完整（许可证识别不能坏）',
+    /Permission is hereby granted, free of charge/.test(rootLic)
+      && /THE SOFTWARE IS PROVIDED "AS IS"/.test(rootLic), '');
+}
+
+// 三份许可文件里的相对链接必须真的能打开 —— 之前 tools/assets/LICENSE 里写的 `../LICENSE`
+// 指向 tools/LICENSE（不存在），中英四处全是死链，而且没有任何测试会发现。
+{
+  const files = ['LICENSE', 'characters/LICENSE', 'tools/assets/LICENSE'];
+  const broken = [];
+  let checked = 0;
+  for (const f of files) {
+    const txt = read(f);
+    for (const m of txt.matchAll(/\]\(([^)]+)\)/g)) {
+      const href = m[1].trim();
+      if (/^(https?:|#|mailto:)/i.test(href)) continue;
+      checked++;
+      const target = path.resolve(path.dirname(path.resolve(ROOT, f)), href.split('#')[0]);
+      if (!fs.existsSync(target)) broken.push(`${f} → ${href}`);
+    }
+    // 文本里直接写的路径（不是 markdown 链接）也要能解析，例如 "see ../../characters/LICENSE"
+    for (const m of txt.matchAll(/(?:see|见)\s+((?:\.\.\/)+[A-Za-z0-9_./-]+)/g)) {
+      checked++;
+      const target = path.resolve(path.dirname(path.resolve(ROOT, f)), m[1]);
+      if (!fs.existsSync(target)) broken.push(`${f} → ${m[1]}`);
+    }
+  }
+  chk('三份许可文件里的相对链接都指向真实文件', broken.length === 0, broken.join(' | '));
+  // 别让上面那条空转：一个链接都没扫到的时候，它永远是绿的
+  chk(`链接检查确实扫到了链接（${checked} 个）`, checked >= 5, String(checked));
+}
+
+// 条款本身的守卫：这两句是 2026-10-19 补的，改措辞时别把它们弄丢
+{
+  const artLic = read('characters/LICENSE');
+  const iconLic = read('tools/assets/LICENSE');
+  const near = (s) => /non-commercial/.test(s) && /non-commercial quoting|明文允许的非商业引用/.test(s);
+  chk('「摘出来再分发」写明了非商业引用是唯一例外（中英都要有）',
+    near(artLic) && near(iconLic), '');
+  chk('都写了「未明确授予的权利一律保留」',
+    /not expressly granted/i.test(artLic) && /没有明确授予的权利/.test(artLic)
+      && /not expressly granted/i.test(iconLic) && /没有明确授予的权利/.test(iconLic), '');
+  chk('图标那份的条款不再比形象那份松（也点名了封面/缩略图与商店提交物）',
+    /covers or thumbnails/.test(iconLic) && /store submission/.test(iconLic)
+      && /封面或缩略图/.test(iconLic) && /商店提交物/.test(iconLic), '');
+  // README 两份都要提到"分发构建产物"这条 —— 它是最容易被漏掉的实质条款
+  chk('两份 README 都写了「不得分发构建产物」',
+    /APK/.test(zh) && /AAB/.test(zh) && /构建产物/.test(zh)
+      && /APK/.test(en) && /AAB/.test(en) && /build/i.test(en), '缺一条');
+  // 录像可以、截帧当封面不行：这条不明说的话，两个允许/禁止读起来就是矛盾的
+  chk('「录像可以、截帧当封面不行」两边都说清了',
+    /截出来当封面/.test(artLic) && /frame out of that footage/i.test(artLic), '');
+}
+
 console.log(`\n${failed ? failed + ' 项失败' : '全部通过'}`);
 process.exit(failed ? 1 : 0);

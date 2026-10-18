@@ -1,5 +1,9 @@
 MIT License
 
+Scope — this license covers the source code of Ponko HUD only.
+The artwork (characters/** and tools/assets/**) is NOT licensed under MIT:
+all rights reserved, see characters/LICENSE and tools/assets/LICENSE.
+
 Copyright (c) 2026 visitor257
 
 Permission is hereby granted, free of charge, to any person obtaining a copy

@@ -298,8 +298,9 @@ The **source code** (`app/`, `server/`, the scripts in `tools/`, `native_host.py
 - **You may not**: distribute any build, package, installer or store submission that contains the
   artwork — an APK, AAB, zip or any other installable form of this project or of a fork, free or
   paid, whether or not the source is published alongside it; use it commercially; modify, recolor,
-  redraw or build derivative work from it (avatars, banners, merchandise, other characters);
-  extract it and redistribute it on its own.
+  redraw or build derivative work from it (avatars, banners, covers or thumbnails, merchandise,
+  other characters); extract it and redistribute it on its own (the non-commercial quoting above is
+  the only exception).
 
 For commercial use or anything else, open an issue first. The bundled Klingon font under
 `app/assets/fonts/` is distributed under the SIL OFL, with its license text alongside.

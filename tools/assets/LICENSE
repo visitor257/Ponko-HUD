@@ -5,10 +5,10 @@ Copyright (c) 2026 visitor257. All rights reserved.
 
 Every file in this directory (Ponko-HUD.ico and the Ponko-HUD_<size>.png
 icons) is artwork of Ponko HUD. It is NOT covered by the MIT license that
-applies to the source code (see ../LICENSE).
+applies to the source code (see ../../LICENSE).
 
 The terms are the same as for the character artwork — see
-../characters/LICENSE in short:
+../../characters/LICENSE in short:
 
   - you may run the app, build it from source for your own private use, keep
     the icons inside a fork or clone (publishing the fork's source, not
@@ -22,18 +22,28 @@ The terms are the same as for the character artwork — see
     you like; do not hand the build to anyone else or upload it to a store,
     registry or download site;
   - you may not use them commercially, modify them, build derivative work
-    from them, or extract and redistribute them on their own.
+    from them (avatars, banners, covers or thumbnails, merchandise), or
+    extract and redistribute them on their own — the non-commercial quoting
+    above is the only exception.
+
+All rights not expressly granted above are reserved by the author.
+Any other use needs the author's permission: ask through the project
+repository first.
 
 --------------------------------------------------------------------------
 
 本目录下的每个文件（Ponko-HUD.ico 与 Ponko-HUD_<尺寸>.png）都是 Ponko HUD 的
-应用图标美术资源，**不适用**源码的 MIT 许可（见 ../LICENSE）。
+应用图标美术资源，**不适用**源码的 MIT 许可（见 ../../LICENSE）。
 
-条款与角色形象素材相同，详见 ../characters/LICENSE，简述：
+条款与角色形象素材相同，详见 ../../characters/LICENSE，简述：
 
   - 可以：运行应用、从源码自行构建供自己使用、在 fork 或克隆里保留图标
     （指发布源码，不含发构建产物）、展示截图或录像、
     在非商业的介绍/评测文章里贴出未经修改的图标并注明出处；
   - 不可以：分发任何包含这些图标的构建产物或商店提交物（本项目或 fork 打出来的
     APK、AAB、压缩包等一切可安装形态，无论是否同时公开源码、是否免费）；
-    商用、修改、作为衍生作品的素材、单独摘出来再分发。
+    商用、修改、作为衍生作品的素材（头像、横幅、封面或缩略图、周边）、
+    单独摘出来再分发 —— 上面明文允许的非商业引用是唯一例外。
+
+上面没有明确授予的权利，一律保留。超出明文范围的其它用途，
+请先在仓库开 issue 征得同意。
