@@ -11,7 +11,7 @@
 //                                                              前端 Mood.fromAgent()
 //
 // 三个字段的分工：
-//   state     内部状态（idle/think/working/happy/sleepy/angry/error）—— 决定全局配色与心情条
+//   state     内部状态（idle/think/working/happy/shy/sleepy/angry/error）—— 决定全局配色与心情条
 //   face      表情标签（素材包 characters/*/src/*.png 的文件名）—— 决定角色立绘
 //   note      第一人称短句 —— 显示在 MOOD 面板；intensity 影响数值与曲线
 //
@@ -32,6 +32,10 @@ const STATES = {
   // "手上在忙"和"心里亮起来"两义，纯高兴的那一轮只能落到 working —— 那张脸就白画了。
   // 现在分工：happy = 情绪本身在上扬（被夸、被逗到、事情成了）；working = 劲头在手上。
   happy:  { label: '高兴', hint: '心情亮起来了 —— 被夸 / 被逗到 / 事情成了 / 玩得开心（不一定在干活）' },
+  // shy 是 2026-10-19 用户加的「害羞」立绘（第 8 个 state）。它和 happy 挨着但不是一档：
+  //   happy 往外放（乐、得瑟），shy 往里收（脸热、想躲、不知怎么接话）。
+  // 也不并进 error：error 是委屈/受挫（难受），shy 心里其实不难受，只是不好意思。
+  shy:    { label: '害羞', hint: '脸有点热 —— 被夸得不知怎么接 / 被盯着看 / 说了句大胆的话又后悔（不是难受）' },
   sleepy: { label: '瞌睡', hint: '长时间没被唤起，低功耗待机' },
   // angry 与 error 是一对**方向相反**的坏心情（2026-10-17 用户加了第 6 张立绘后拆出来的）：
   //   angry = 向外，带着劲儿：生气、上火、被惹到、不服
@@ -83,6 +87,13 @@ const STATE_ALIAS = {
   激动: 'happy', 被夸: 'happy', 心里美: 'happy',
   glad: 'happy', proud: 'happy', excited: 'happy', joy: 'happy', joyful: 'happy',
   cheerful: 'happy', cheer: 'happy', delight: 'happy', thrilled: 'happy',
+  // 害羞（往里收，但不是难受）→ shy。2026-10-19 加「害羞」立绘时独立成一档。
+  // ⚠ 别把它并进 error：委屈/受挫是"难受"，害羞只是"不好意思"；
+  //   两者共用一档的话，害羞那张脸只能在真难受的时候出现，等于白画。
+  shy: 'shy', 害羞: 'shy', 羞涩: 'shy', 腼腆: 'shy', 害臊: 'shy', 脸红: 'shy',
+  不好意思: 'shy', 难为情: 'shy', 娇羞: 'shy', 局促: 'shy', 窘: 'shy', 羞: 'shy',
+  bashful: 'shy', embarrassed: 'shy', embarrassment: 'shy', blush: 'shy', blushing: 'shy',
+  sheepish: 'shy', timid: 'shy',
   // 干活 / 输出（劲头在手上，跟高不高兴是两件事）
   // ⚠ 'stream' 是 2026-10-18 之前的旧名，留在这里是为了让**旧存档与旧对话历史**里的
   //   [[mood:stream|...]] 仍然认得出来（丢掉的话那一轮等于没声明心情）。
@@ -296,6 +307,9 @@ const GUESS_RULES = [
   // happy 必须排在 working **前面**：两边都收"高兴"这一类词，先到先得；
   // 而且这些词在提示词里是给 happy 的，猜错成 working 就又是"脸白画"。
   ['happy',  /高兴|开心|快乐|愉快|欣喜|雀跃|惊喜|美滋滋|兴奋|得意|自豪|激动|被夸|心里美|happy|glad|proud|excited|joy|cheer|delight|thrill/],
+  // 害羞排在这里、且在 working / error 之前："不好意思"里的"意思"、"难为情"都不该被别处抢走
+  // （error 那条收着"委屈"，两者含义相反）。
+  ['shy',    /害羞|羞涩|腼腆|害臊|脸红|不好意思|难为情|娇羞|局促|窘|羞|shy|bashful|embarrass|blush|sheepish|timid/],
   ['working', /说|输出|回答|讲|解释|写|表达|汇报|陈述|总结|介绍|补充|工作|干活|来劲|热情|generat|answer|reply|respond|speak|talk|explain|writ|output|working|stream|say|tell/],
   // angry 必须排在 error **前面**：两边都收"气"字系词，先到先得。
   ['angry',  /生气|愤怒|火大|恼火|暴怒|发火|发飙|气死|上火|不爽|烦躁|讨厌|气|angry|mad|furious|annoy|irritat|upset|rage/],
@@ -431,14 +445,19 @@ function buildSystemPrompt(faces, opts) {
     '  （它是你说的话，同样不要写成动作或神态）',
     '- until 可省略；单位是毫秒，表示这份心情至少保持多久（省略则默认保持 5 分钟）',
     '',
-    '这七个 STATE 是你的*感受*，不是"工作模式"：',
+    '这八个 STATE 是你的*感受*，不是"工作模式"：',
     '- idle   平静 / 无所谓 / 放松',
     '- think  专注 / 好奇 / 犯难 / 在琢磨',
     '- happy  高兴 / 开心 / 被夸得美 / 事情成了 / 玩得开心',
+    '- shy    害羞 / 脸热 / 不好意思 / 想躲一下 / 不知怎么接话 —— 心里不难受，只是收着',
     '- working 来劲 / 干得起劲 / 正在往外输出 —— 重心在"手上在忙"',
     '- sleepy 困倦 / 无聊 / 被晾着',
     '- angry  生气 / 上火 / 被惹到 / 不服气 —— 火是**朝外**的，你还带着劲儿',
     '- error  委屈 / 难过 / 沮丧 / 被否定 —— 是**往心里去**的，人有点蔫',
+    '',
+    'happy 和 shy 也别混（都往心里去，方向相反）：',
+    '  happy 是往外**放**（乐、得瑟、想让人看见）；shy 是往里**收**（脸红、低头、嘴上不承认）。',
+    '  shy 更不是 error：error 是难受、是受挫；shy 只是不好意思 —— 别把"害羞"写成"委屈"。',
     '',
     'happy 和 working 也别混（这两档最容易写成同一个）：',
     '  happy 是**心情本身**在发亮（乐了、被夸、被逗到）；working 是**劲头**在手上（在写、在干、越干越起劲）。',
@@ -460,6 +479,8 @@ function buildSystemPrompt(faces, opts) {
     '**你要对用户的态度有反应，别什么都回一句平静**：',
     '- 夸你、逗你、跟你玩、叫你的名字 → happy（高兴），note 可以俏皮一点；',
     '  要是同时正忙着手上的活，working 也对 —— 看你此刻更强烈的是"乐"还是"劲"',
+    '- 拦着你夸（"别看了"）、被盯着夸、说了句大胆的话又后悔 → shy（害羞），',
+    '  note 带点"嘴硬"或"想躲"的意思；被夸得心里发飘但接不住话，也是 shy',
     '- 骂你、挑刺、否定你、说你没用 → angry（生气 / 不服）或 error（委屈 / 蔫了），看你是顶回去还是难受',
     '  两种都对，**别永远只挑一个**；被冤枉、被无理要求最容易上火（angry）。',
     '- 很久没人理你、话题很闷 → sleepy',

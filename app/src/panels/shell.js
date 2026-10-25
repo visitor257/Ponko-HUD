@@ -26,7 +26,7 @@ export class ShellTab {
     this.mood = mood;
     this.id = id;              // 后端会话 id（也是 /api/shell、/api/pty 的 session）
     this.ci = ci;              // 色标下标 —— 这个标签的"身份色"，替代原来的数字编号
-    this.lines = [];           // {kind:'cmd'|'out'|'err'|'info', text}
+    this.lines = [];           // {kind:'cmd'|'out'|'err'|'info', text, p?}  p = 命令行入栈那一刻的提示符
     this.cwd = 'C:\\';
     this.busy = false;
     this.scroll = 0;
@@ -136,8 +136,13 @@ export class ShellTab {
    * 界面自己说的话（欢迎语、帮助、报错话术）走 pushT()：存 key，切语言时能整屏重译。
    */
   push(kind, text) {
+    // 提示符要**当场定格**，不能等画的时候再算。
+    // 它由 cwd + shell 种类现算，而这两样之后都会变；若每帧现算，整个回滚区会被统一刷成
+    // "最后一次的目录"和"最后一次的 shell 样式"——历史里 `PS C:\a>` 会变成 `C:\b>`，
+    // 看着就像历史被打乱了（2026-10-26 用户报的就是这个）。
+    const stamp = kind === 'cmd' ? this.prompt : undefined;
     for (const l of String(text === undefined || text === null ? '' : text).split('\n')) {
-      this.lines.push({ kind, text: l });
+      this.lines.push({ kind, text: l, p: stamp });
       if (this.onLine) { try { this.onLine(l); } catch (e) { /* 钩子炸了不能拖垮面板 */ } }
     }
     if (this.lines.length > 500) this.lines.splice(0, this.lines.length - 500);
@@ -364,13 +369,17 @@ export class ShellTab {
     // 可见行（从底部往上排）
     const items = [];
     for (const l of this.lines) {
-      const pre = l.kind === 'cmd' ? prompt : indent;
+      // 命令行用它入栈时定格的提示符（l.p）；`prompt` 只给最底下的输入行用
+      const pre = l.kind === 'cmd' ? (l.p === undefined ? prompt : l.p) : indent;
       const full = pre + l.text;
       const n = Math.max(1, Math.ceil(g.strWidth(full) / iw));
       for (let i = 0; i < n; i++) {
         items.push({ text: full.slice(i * iw, (i + 1) * iw), kind: l.kind, first: i === 0 });
       }
     }
+    const maxScroll = Math.max(0, items.length - viewH);
+    this._maxScroll = maxScroll;
+    if (this.scroll > maxScroll) this.scroll = maxScroll;
     const start = Math.max(0, items.length - viewH - this.scroll);
     let y = r.y + 1;
     for (let i = start; i < Math.min(items.length, start + viewH); i++) {
@@ -461,7 +470,10 @@ export class ShellTab {
         this.pty.scroll + (d > 0 ? -1 : 1)));
       return true;
     }
-    this.scroll = Math.max(0, Math.min(400, this.scroll + (d > 0 ? -1 : 1)));
+    // 上限用 body() 每帧算好的真实可滚行数，不能写死 400（否则到顶后继续划会攒"欠账"，
+    // 反向要先把欠账还完才动 —— 和 llm 框 2026-10-26 修的是同一个毛病）
+    const max = this._maxScroll || 0;
+    this.scroll = Math.max(0, Math.min(max, this.scroll + (d > 0 ? -1 : 1)));
     return true;
   }
 }

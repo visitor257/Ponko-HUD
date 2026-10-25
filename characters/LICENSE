@@ -9,6 +9,14 @@ illustrations in src/, the block-character frames and their metadata in
 frames/ (the .ans, .json, pack.json and preview.html files derived from
 them), and any future packs.
 
+Each image in `src/` carries an invisible provenance mark: a short record of the
+author, the project, the asset name and a hash of the visible pixels, written
+into the least significant bits of the fully transparent pixels. Those pixels
+never reach the screen, so the rendered image is pixel-for-pixel identical with
+or without it. Removing, altering or forging that mark is a breach of this
+licence like any other. `MANIFEST.json` lists the sha256 of every file and can
+be used to check whether a copy you were given is the original.
+
 These files are NOT covered by the MIT license that applies to the source
 code of Ponko HUD (see ../LICENSE).
 
@@ -59,6 +67,11 @@ All rights not expressly granted above are reserved by the author.
 本目录及其下所有内容（characters/ 全部子目录，含 _archive/ 里的每个包）是
 Ponko HUD 的角色形象素材：src/ 里的原图、frames/ 里由它们生成的方块字符帧
 与元数据（.ans、.json、pack.json、preview.html），以及以后新增的包。
+
+`src/` 里的每张图都带一段**不可见**的溯源标记：作者、项目、素材名，以及可见像素的哈希，
+写在全透明像素的 RGB 最低位里。那些像素不参与合成，所以加不加标记，屏幕上逐像素完全相同。
+移除、篡改或伪造这段标记，与违反本许可的其它条款同等对待。`MANIFEST.json` 记录了每个文件的
+sha256，可用来核对"别人给你的这份是不是原件"。
 
 这些文件**不适用** Ponko HUD 源码的 MIT 许可（见 ../LICENSE）。
 

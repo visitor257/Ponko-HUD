@@ -69,9 +69,10 @@ English version — [README.en.md](README.en.md)
   跟着对话存档走（`run/conversations/<id>.json` 的 `mood` 字段），下次启动各自还回来
   —— 所以隔一阵子再开也还是那个心情（2026-10-15 修）。**一个 state 都不折**：包括 `'working'`
   （旧名 `stream`；提示词里"干得起劲"发出来就是它）也原样还回来 —— 退出时是什么，重开就是什么
-  （2026-10-18 修）。七个 STATE 是 `idle / think / working / happy / sleepy / angry / error`：
-  `working` 指"正在逐字输出、手上正忙得起劲"，`happy` 指"心里亮起来了"（被夸、被逗到、事情成了）——
-  两者能同时成立，模型按它此刻那句心里话挑一个（2026-10-18 加 `happy` 时把这两档分开了）。
+  （2026-10-18 修）。八个 STATE 是 `idle / think / working / happy / shy / sleepy / angry / error`：
+  `working` 指"正在逐字输出、手上正忙得起劲"，`happy` 指"心里亮起来了"（被夸、被逗到、事情成了），
+  `shy` 指"脸有点热、不好意思、想躲一下"（2026-10-19 加）——
+  三者能同时成立，模型按它此刻那句心里话挑一个（2026-10-18 加 `happy`、2026-10-19 加 `shy` 时分了三次）。
   **心情只由 agent 改**（2026-10-17）：没有"没人说话两分钟就自动变瞌睡"这种兜底，也不会因为
   声明"到期"自己退回待机 —— 停多久就是多久，直到 agent 下一次开口。程序只在三种情况下动它：
   新对话从待机起步、开机把 agent 自己声明过的那份还回来、调试旁路 `?mood=`
@@ -176,7 +177,7 @@ app/src/        前端：grid 字符网格、dots 立绘点阵化、vt 终端仿
 app/src/i18n/   语言包：index.js 的 t() 入口 + zh-cn.js（简中，ui.*/boot.* 均为全量）+ en.js（ui.* 与 boot.* 的兜底：任何语言包缺的条目都落这里）+ ja.js（界面日语；启动日志 boot.* 故意留空 → 落英文）+ ru.js（俄语，ui.* 与 boot.* 均为全量）+ tlh.js（克林贡语，ui.* 与 boot.* 均为全量，正文是 pIqaD 字形）
   + assets/fonts/pIqaD-qolqoS.ttf（克林贡文字体，SIL OFL，随包分发）
 server/         后端：server.js HTTP 服务、bootlog.js 启动记录、pty.js PTY 管理、ptybridge.py Windows ConPTY 桥
-characters/     角色素材（src/*.png 高清立绘 + frames/*.ans|json 字符帧）；美术素材保留所有权利，不在 MIT 内（characters/LICENSE）
+characters/     角色素材（src/*.png 高清立绘 + frames/*.ans|json 字符帧 + MANIFEST.json 哈希清单）；美术素材保留所有权利，不在 MIT 内（characters/LICENSE）
 tools/assets/   应用图标（.ico + 各尺寸 png）；同为美术素材，保留所有权利（tools/assets/LICENSE）
 native_host.py  pywebview 原生窗口宿主
 run/            运行时产物（对话存档、ui-state.json 界面状态、boot.log、host.log）：已在 .gitignore 中排除，**不进仓库**
@@ -275,13 +276,18 @@ SHELL 面板另有一组**内置命令**（在终端中直接输入，不带斜�
 「Ponko」是项目名；名称与形象的权利都归作者所有。两者都不可以用于任何使人误以为
 经过作者认可或授权的产品或服务。
 
-`characters/ponko/` 是**正式角色形象**：`src/` 里 7 张图 = 七个 state 各一张。
+`characters/ponko/` 是**正式角色形象**：`src/` 里 8 张图 = 八个 state 各一张。
 ⚠ 素材**标签**（文件名）跟 state 名不完全一样：`working` 这一档的图叫 `streaming`
 （改标签要连带重命名 `frames/*.ans|*.json`，而且旧存档里的 `face:"streaming"` 会失配 ——
-所以名字一直没动），其余六档同名。
-`frames/` 是 `tools/charpack.py` 转出来的方块字符帧（七张共用同一取景，换表情时人物不会跳）。
+所以名字一直没动），其余七档同名。
+`frames/` 是 `tools/charpack.py` 转出来的方块字符帧（八张共用同一取景，换表情时人物不会跳）。
+每张 `src/*.png` 里还埋了一段**不可见**的溯源标记（作者 / 项目 / 素材名 / 可见像素哈希），
+写在全透明像素的 RGB 最低位 —— 那些像素不参与合成，所以加不加标记，屏幕上逐像素完全相同。
 `happy`（高兴）原本是 working 之下额外的一张脸，2026-10-18 升成独立的一档 —— 因为它要的不只是换张图，
-还要自己那套配色和心情条位置；两张脸以外的区别见上面"七个 STATE"那段。
+还要自己那套配色和心情条位置；`shy`（害羞）同理，2026-10-19 直接作为第 8 档加入。
+它和 `happy` 挨着但方向相反：`happy` 往外放（乐、得瑟），`shy` 往里收（脸红、低头、嘴上不承认）；
+它也不是 `error` —— 后者是委屈、是难受，`shy` 心里并不难受。
+各档的区别见上面"八个 STATE"那段。
 `angry`（生气）与 `error`（出错）是一对方向相反的坏心情 —— 前者是**朝外**的火气（上火、不服），
 后者是**往心里去**的低落（委屈、受挫）；两条配色也刻意分开（火橙红 vs 偏粉的冷红），一眼能认出是哪种。
 
@@ -341,9 +347,16 @@ SHELL 面板另有一组**内置命令**（在终端中直接输入，不带斜�
 > 大色块几何图。它验证了"糊"的根因是**字符网格的分辨率下限**，而不是画法 —— 所以最终的解法是让
 > 立绘绕开网格。几何版留在 `characters/_archive/ponko-geo/`，程序不再加载它。
 
-`characters/ponko/src` 由 `tools/_matte_pack.py` 从角色原画生成（连通域抠背景 + 去右下角水印 +
-取景到腰），不含任何第三方素材。授权**不随代码走**：代码是 MIT，形象保留所有权利
+`characters/ponko/src` 由 `tools/_matte_pack.py` 从角色原画生成（连通域抠背景 + 去掉生成器的角标 +
+取景到腰；这份一次性的抠图脚本不入库），它最后一步会自动调 `tools/watermark.py` 写标记并刷新
+`characters/MANIFEST.json`；不含任何第三方素材。授权**不随代码走**：代码是 MIT，形象保留所有权利
 （[characters/LICENSE](characters/LICENSE)）。
+
+标记只扛无损搬运（另存、克隆、打包成 zip）：截图、缩放、量化、转 JPEG 都会把它冲掉 ——
+所以它是**举证**手段（证明这个文件是从本仓库流出去的），不是防护；也追不到具体是谁泄露的
+（只从 GitHub 一个出口分发，所有人拿到的都是同一份）。改完图跑
+`python tools/watermark.py --apply`（幂等）刷新标记与清单，`--verify` 校验，
+`node tools/test_watermark.mjs` 是守卫。
 
 `characters/_archive/` 只留**不再加载**的历史形象（几何版 `ponko-geo`、早期的 `ponko-ai`）——
 目录扫描只走 `characters/` 下一层，不会往里钻。开发期那个测试占位角色（`ds-whale`）已经删掉；

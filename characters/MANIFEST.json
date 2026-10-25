@@ -1,0 +1,74 @@
+{
+  "_comment": [
+    "由 tools/watermark.py --manifest 生成，请勿手改。",
+    "sha256 = 文件字节；visible_sha256_16 = 可见像素（alpha>0）的哈希，同一份值也写在图里的不可见标记中。",
+    "两者不一致说明文件被动过（重存无害，改图有害）。"
+  ],
+  "generated_by": "tools/watermark.py --manifest",
+  "files": [
+    {
+      "art": "ponko/angry",
+      "path": "characters/ponko/src/angry.png",
+      "bytes": 564952,
+      "sha256": "f9ca4c2f40bc963fd1e7b077df48f08b563c1d3f3c945bb6aba436ff19120afd",
+      "visible_sha256_16": "06722eb6039f8705",
+      "watermark": "ok"
+    },
+    {
+      "art": "ponko/error",
+      "path": "characters/ponko/src/error.png",
+      "bytes": 530414,
+      "sha256": "7bb0a10956d239a7b082b60a4727287ad0f679e0ee584c404908670ff90ab228",
+      "visible_sha256_16": "daabc60483d1fc12",
+      "watermark": "ok"
+    },
+    {
+      "art": "ponko/happy",
+      "path": "characters/ponko/src/happy.png",
+      "bytes": 550715,
+      "sha256": "d71c7684760f2b6681bd9ed82ff73ad861484f012e1f022abefa0d58543e4bd0",
+      "visible_sha256_16": "4fd31056c79d8297",
+      "watermark": "ok"
+    },
+    {
+      "art": "ponko/idle",
+      "path": "characters/ponko/src/idle.png",
+      "bytes": 524649,
+      "sha256": "c4c27a9b30bd3d655a0744b6cda19cbaa8f4b6eb9d518bc94a9275010e8dc486",
+      "visible_sha256_16": "5d26f8035fd41198",
+      "watermark": "ok"
+    },
+    {
+      "art": "ponko/shy",
+      "path": "characters/ponko/src/shy.png",
+      "bytes": 532816,
+      "sha256": "ccd5329f9a1bc84a0f2a3f70e56c56d4ee1b274ea152eb2b5f446fd1d019f419",
+      "visible_sha256_16": "f0b0aa1504eeeead",
+      "watermark": "ok"
+    },
+    {
+      "art": "ponko/sleepy",
+      "path": "characters/ponko/src/sleepy.png",
+      "bytes": 521105,
+      "sha256": "87a2c70f22ab691beff7c255c718c19adc42a0ce06bb075d035e516125512c83",
+      "visible_sha256_16": "8c73273f971a637e",
+      "watermark": "ok"
+    },
+    {
+      "art": "ponko/streaming",
+      "path": "characters/ponko/src/streaming.png",
+      "bytes": 538231,
+      "sha256": "ce8e2714ed87ee520b865085cb795a91910cc2a49fdeb156ecdf750e07595f39",
+      "visible_sha256_16": "3a0ee436b9e38375",
+      "watermark": "ok"
+    },
+    {
+      "art": "ponko/thinking",
+      "path": "characters/ponko/src/thinking.png",
+      "bytes": 523479,
+      "sha256": "b465b75ccfc347561350ebf6bd4b4b66d1af04869597c372a56b7a690d8b73a1",
+      "visible_sha256_16": "55e477bb4fc7114c",
+      "watermark": "ok"
+    }
+  ]
+}

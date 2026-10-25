@@ -78,10 +78,11 @@ English version — [中文版 / Chinese version](README.md)
   field) and is restored per conversation on the next launch — so it is still there even after a while away
   (fixed 2026-10-15). **No state is folded on restore**, including `'working'` (formerly `stream`; what the
   prompt emits for "hands busy and fired up"): whatever it was when you quit is exactly what you get on reopen
-  (fixed 2026-10-18). The seven states are `idle / think / working / happy / sleepy / angry / error`:
+  (fixed 2026-10-18). The eight states are `idle / think / working / happy / shy / sleepy / angry / error`:
   `working` means "streaming tokens out / heads-down and going at it", `happy` means "mood has lit up"
-  (praised, amused, something worked) — both can be true at once, and the model picks the one closer to the
-  thought it is having (split apart on 2026-10-18 when `happy` was added).
+  (praised, amused, something worked), `shy` means "face a bit warm / embarrassed / wanting to duck away"
+  (added 2026-10-19) — all three can be true at once, and the model picks the one closer to the thought it is
+  having (split apart on 2026-10-18 when `happy` was added, again on 2026-10-19 for `shy`).
   **Only the agent changes the mood** (2026-10-17): there is no "two quiet minutes → doze off" fallback, and a
   declared mood does not expire back to idle on its own — it stays until the agent speaks again. The program only
   touches it in three cases: a new conversation starts idle, a launch restores the mood the agent itself declared,
@@ -198,7 +199,7 @@ app/src/        frontend: grid character grid, dots portrait dot-matrix, vt term
 app/src/i18n/   language packs: index.js t() entry + zh-cn.js (Simplified Chinese, complete for ui.* and boot.*) + en.js (fallback for both: every entry missing from any pack lands here) + ja.js (Japanese UI; boot.* deliberately empty → falls to English) + ru.js (Russian, complete for ui.* and boot.*) + tlh.js (Klingon, complete for both, body text in pIqaD)
   + assets/fonts/pIqaD-qolqoS.ttf (Klingon script font, SIL OFL, redistributed unmodified)
 server/         backend: server.js HTTP service, bootlog.js boot records, pty.js PTY management, ptybridge.py Windows ConPTY bridge
-characters/     character assets (src/*.png artwork + frames/*.ans|json block frames); artwork is all rights reserved, not MIT (characters/LICENSE)
+characters/     character assets (src/*.png artwork + frames/*.ans|json block frames + MANIFEST.json hash list); artwork is all rights reserved, not MIT (characters/LICENSE)
 tools/assets/   application icons (.ico + sized png); artwork too, all rights reserved (tools/assets/LICENSE)
 native_host.py  pywebview native window host
 run/            runtime artefacts (saved conversations, ui-state.json UI state, boot.log, host.log): git-ignored, **never committed**
@@ -312,14 +313,21 @@ under `app/assets/fonts/` is distributed under the SIL OFL, with its license tex
 "Ponko" is the name of this project; all rights in the name and in the artwork are reserved by the
 author. Neither may be used in a way that suggests the author endorsed or authorised your product.
 
-`characters/ponko/` holds the **shipping character artwork**: `src/` has 7 images — one per state.
+`characters/ponko/` holds the **shipping character artwork**: `src/` has 8 images — one per state.
 ⚠ The asset **tags** (file names) do not exactly match the state names: the `working` image is called
 `streaming` (renaming a tag means renaming `frames/*.ans|*.json` too, and old saves carrying
-`face:"streaming"` would stop matching — so the name stayed), the other six match.
-`frames/` holds the block-character frames produced by `tools/charpack.py` (all seven share one framing,
+`face:"streaming"` would stop matching — so the name stayed), the other seven match.
+`frames/` holds the block-character frames produced by `tools/charpack.py` (all eight share one framing,
 so switching expressions does not make the character jump).
+Each `src/*.png` also carries an **invisible** provenance mark (author / project / asset name / hash of
+the visible pixels) in the least significant bits of the fully transparent pixels: those pixels never
+take part in compositing, so the rendered image is pixel-for-pixel identical with or without it.
 `happy` started as an extra face under `working` and became a state of its own on 2026-10-18: it needed
-more than a different picture — its own colours and its own place on the mood bar (see "seven states" above).
+more than a different picture — its own colours and its own place on the mood bar. `shy` joined the same
+way as the 8th state on 2026-10-19. It sits next to `happy` but points the other way: `happy` opens
+outward (delight, showing off), `shy` pulls inward (blushing, looking down, denying it) — and it is not
+`error` either, which is hurt and deflation; `shy` is not unhappy at all.
+See "eight states" above for how they differ.
 `angry` and `error` are a pair of opposite bad moods — the former is fire aimed **outward**
 (worked up, defiant), the latter is **inward** deflation (hurt, defeated); their themes are kept apart on
 purpose (hot orange-red vs a cooler pinkish red) so you can tell at a glance which one it is.
@@ -382,9 +390,17 @@ itself is just one `drawImage`.
 > and is no longer loaded.
 
 `characters/ponko/src` is produced from the original character art by `tools/_matte_pack.py`
-(connected-component background removal + watermark cleanup + waist crop); no third-party assets.
-The license does **not** follow the code: the code is MIT, the artwork is all rights reserved
-([characters/LICENSE](characters/LICENSE)).
+(connected-component background removal + removing the generator's stamp + waist crop; that one-off
+matte script is not published), and its last step calls `tools/watermark.py` to write the provenance
+mark and refresh `characters/MANIFEST.json`; no third-party assets. The license does **not** follow the
+code: the code is MIT, the artwork is all rights reserved ([characters/LICENSE](characters/LICENSE)).
+
+The mark only survives lossless handling (re-saving, cloning, zipping): screenshots, resizing,
+quantising or a JPEG round-trip wipe it out. So it is **evidence** (this file came out of this
+repository), not protection — and it cannot tell you who leaked a copy, since everything is published
+from a single GitHub repo and everyone receives the same bytes. After changing any artwork run
+`python tools/watermark.py --apply` (idempotent) to refresh the mark and the manifest, `--verify` to
+check, and `node tools/test_watermark.mjs` as the guard.
 
 `characters/_archive/` only keeps historical looks that are **no longer loaded** (the geometric
 `ponko-geo`, the earlier `ponko-ai`) — the scan runs one level under `characters/` and never walks in.

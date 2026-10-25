@@ -59,6 +59,19 @@
         "tlh": ""
       }
     },
+    "shy": {
+      "frames": [
+        "shy.ans"
+      ],
+      "fps": 0,
+      "loop": false,
+      "label": {
+        "en": "shy",
+        "zh-cn": "害羞",
+        "ru": "стеснение",
+        "tlh": ""
+      }
+    },
     "sleepy": {
       "frames": [
         "sleepy.ans"

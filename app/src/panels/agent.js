@@ -337,7 +337,17 @@ export class AgentConv {
     this.pushT('think', 'ui.agent.aborted');
   }
 
-  onWheel(d) { this.scroll = Math.max(0, Math.min(400, this.scroll + (d > 0 ? -1 : 1))); return true; }
+  /**
+   * 滚轮：往上 = 回看历史。
+   * 上限必须是**这一帧真能滚的行数**（=_maxScroll，body() 每帧算好），不能是写死的 400：
+   * 内容只有 30 行时滚到顶后再往上划，旧写法会继续把 scroll 加到 400，
+   * 于是往下划要先把这些"欠账"还完才动 —— 用户 2026-10-26 报的就是这个。
+   */
+  onWheel(d) {
+    const max = this._maxScroll || 0;
+    this.scroll = Math.max(0, Math.min(max, this.scroll + (d > 0 ? -1 : 1)));
+    return true;
+  }
   onArrow(dir) { return this.onWheel(-dir); }
 
   /** 面板主体（不含外框：外框与标签栏都由 AgentPanel 画） */
@@ -378,6 +388,11 @@ export class AgentConv {
         }
       }
     }
+    // 真正能回看的行数 = 内容行数 - 可视行数。scroll 以它为上限（滚轮用这个值夹紧），
+    // 同时每帧再夹一次：内容变短 / 输入框变高（viewH 变小）时，旧的 scroll 会越界。
+    const maxScroll = Math.max(0, lines.length - viewH);
+    this._maxScroll = maxScroll;
+    if (this.scroll > maxScroll) this.scroll = maxScroll;
     const start = Math.max(0, lines.length - viewH - this.scroll);
     let y = r.y + 1;
     for (let i = start; i < Math.min(lines.length, start + viewH); i++) {

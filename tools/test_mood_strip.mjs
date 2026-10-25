@@ -64,6 +64,14 @@ const CASES = [
   ['情绪词·高兴', '[[mood:高兴]]正文', 'happy'],
   ['情绪词·兴奋', '[[心情：兴奋|note:这个我能吹一天]]正文', 'happy'],
   ['情绪词·被夸', '[[mood:被夸]]正文', 'happy'],
+  // shy 是 2026-10-19 的第 8 档（用户加了「害羞」立绘）。它必须**离开** happy 和 error：
+  // 留在 happy 里就永远配不上那张脸；落到 error 就成了"委屈"，方向完全反了。
+  ['情绪词·害羞', '[[mood:害羞]]正文', 'shy'],
+  ['情绪词·不好意思', '[[心情：不好意思|note:别看]]正文', 'shy'],
+  ['情绪词·脸红', '[[mood:脸红]]正文', 'shy'],
+  ['情绪词·英文 shy', '[[mood:shy|face:shy]]正文', 'shy'],
+  ['情绪词·自创"羞死了"（猜）', '[[mood:羞死了]]正文', 'shy'],
+  ['情绪词·腼腆', '[[mood:腼腆]]正文', 'shy'],
   ['情绪词·被晾', '[[mood:被晾]]正文', 'sleepy'],
   // 生气（angry）与委屈（error）是一对方向相反的坏心情，2026-10-17 拆开后必须各归各位：
   // 混着的话那张生气立绘永远轮不到（模型写"生气"却走到 error 上）。
@@ -158,6 +166,13 @@ for (const [name, body, wantState] of CASES) {
   record('被夸 → happy 的触发规则在', sys.includes('夸你') && /夸你[^\n]*happy/.test(sys), '');
   record('提示词写了 happy 与 working 的分工（否则两档永远只用一个）',
     sys.includes('happy 和 working 也别混'), '');
+  // shy（2026-10-19）：既要有立绘可挑，也要说清它跟 happy / error 的方向差
+  record('提示词写了 shy 与 happy / error 的分工',
+    sys.includes('happy 和 shy 也别混') && sys.includes('别把"害羞"写成"委屈"'), '');
+  // 注：别写成 /不好意思[^\n]*shy/ —— shy 的释义行里 shy 在前、不好意思在后，那样必然假红
+  record('害羞 → shy 的触发规则在',
+    sys.includes('不好意思') && sys.includes('→ shy（害羞）'), '');
+  record('提示词里 shy 有一行自己的释义', /^- shy\s/m.test(sys), '');
   // 2026-10-18 改名：提示词里只该出现新名。旧名留给解析器（STATE_ALIAS）认历史，不该再教给模型；
   // 也防住"把开发注释写进 STATES.hint"—— hint 是整句注入的，写进去模型会当设定念出来。
   record('提示词里不再出现旧名 stream', !/\bstream\b/.test(sys), '');

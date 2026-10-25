@@ -172,6 +172,14 @@ chk('非商业引用条款两边一致', /非商业/.test(zh) === /non-commercia
   chk('素材许可把授权范围限定为个人、非商业用途',
     /personal, non-commercial use only/i.test(artLic) && /仅限个人、非商业用途/.test(artLic)
       && /personal, non-commercial use only/i.test(iconLic) && /仅限个人、非商业用途/.test(iconLic), '');
+  // 2026-10-19：立绘里埋了不可见标记（tools/watermark.py）。这是**举证**手段，
+  // 但它只在"文件还在、标记还在"时有用 —— 文档里必须写出来，否则没人会去跑 --verify。
+  chk('素材许可声明了不可移除的溯源标记',
+    /invisible provenance mark/.test(artLic) && /不可见.*溯源标记|溯源标记/.test(artLic)
+      && /MANIFEST\.json/.test(artLic), '');
+  chk('两份 README 都写了立绘带不可见标记',
+    /溯源标记/.test(zh) && /provenance mark/i.test(en)
+      && /watermark\.py/.test(zh) && /watermark\.py/.test(en), '缺说明');
 }
 
 console.log(`\n${failed ? failed + ' 项失败' : '全部通过'}`);

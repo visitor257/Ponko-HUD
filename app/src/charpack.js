@@ -25,6 +25,9 @@ const ALIAS = {
   // happy 是 2026-10-18 的第 7 个 state。包里若只有「高兴」这张中文名素材（或旧包根本没有
   // 这张脸），靠这条别名对上；都没有才会落到 idle。
   happy: ['happy', '高兴', '开心', 'joy'],
+  // shy 是 2026-10-19 的第 8 个 state。素材文件就叫 shy.png，所以英文名直接对上；
+  // 中文名留着给"自己往 src/ 里丢一张 害羞.png 的人"。
+  shy: ['shy', '害羞', '羞涩', '脸红'],
   sleepy: ['sleepy', '瞌睡', 'sleep'],
   angry: ['angry', '生气', '愤怒', 'mad'],
   error: ['error', '出错', 'sad'],

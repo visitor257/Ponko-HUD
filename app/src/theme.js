@@ -32,6 +32,11 @@ const MOODS = {
   // 黄给了 think、橙红给了 angry、正红给了 error，再来个黄橙就会跟 angry/think 糊在一起。
   // 粉的饱和度低一档、亮度高一档，一眼看得出是"高兴"而不是"上火"。
   happy:   { accent: rgb(255, 158, 200), land: rgb(224, 124, 172), glow: 0.95 },
+  // shy（2026-10-19 第 8 个 state）：偏冷的矢车菊蓝。挑它的理由是**色相还空着**——
+  // 青给了 idle、紫给了 sleepy、粉给了 happy、橙红给 angry、正红给 error、黄给 think。
+  // 而且"往里收"的情绪本来就该冷一档；脸红这件事交给立绘自己表达，界面不必再叠一层粉。
+  // glow 压到 0.6：害羞是收着的，别让整个界面亮起来。
+  shy:     { accent: rgb(122, 168, 255), land: rgb(92, 132, 214), glow: 0.6 },
   sleepy: { accent: rgb(158, 130, 240), land: rgb(134, 108, 214), glow: 0.35 },
   // angry 与 error 同属"坏心情"，靠**色温**分开：error 是偏粉的冷红（蔫下去），
   // angry 是饱和的火橙红（烧起来）—— 2026-10-17 加第 6 个 state 时定的。
