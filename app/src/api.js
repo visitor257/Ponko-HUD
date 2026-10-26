@@ -61,10 +61,15 @@ export const runShell = (cmd, onEvent, onEnd, session) => stream('/api/shell', {
 //   persona  这个对话的性格 id（喂进 system 提示词的人设，每个对话一份）
 //   mood     "此刻心情"快照 {state, note, minutes} —— 模型的 mood 标记不进上下文（发历史时会被
 //            剥掉），不给它这份快照，每轮都从白纸开始推情绪（见 server 的 moodBriefing）
+//   convId   这个对话的存档 id。后端拿它决定**私有技能**（run/skills/private/<id>/）看得见哪些，
+//            不给就只有公有技能 —— 技能自举（agent 用 shell 写 SKILL.md）要靠它落到正确的库
+//   shellPolicy  工具放多松：allow（默认，全放行）/ guard（按技能的 guard 规则拦）/ deny（全拦）
 export const askAgent = (text, onEvent, onEnd, history, llm, opts) => stream('/api/agent', {
   text, history: history || [], ...(llm ? { llm } : {}),
   ...(opts && opts.persona ? { persona: opts.persona } : {}),
   ...(opts && opts.mood ? { mood: opts.mood } : {}),
+  ...(opts && opts.convId ? { convId: opts.convId } : {}),
+  ...(opts && opts.shellPolicy ? { shellPolicy: opts.shellPolicy } : {}),
 }, onEvent, onEnd);
 
 // ── 对话存档（AGENT 多标签）：落在后端的 run/conversations/ —— 那个目录不入库，

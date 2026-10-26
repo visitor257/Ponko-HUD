@@ -1,3 +1,4 @@
+// Ponko-HUD · (c) 2026 visitor257 · MIT License · github.com/visitor257/Ponko-HUD
 // Ponko-HUD · 心情是**每个对话一份**的（2026-10-17）
 //
 // 用户报的原话：「我现在第一个对话是生气，然后我按 +，怎么还是生气」。

@@ -24,6 +24,8 @@ const sysinfo = require('./sysinfo');
 const netgeo = require('./netgeo');
 const moodp = require('./moodprotocol');
 const complete = require('./complete');
+const skills = require('./skills');          // 技能库（run/skills 就是注册表，见那个文件抬头）
+const toolrun = require('./toolrun');        // 唯一的工具：shell
 const { PtySession, getSession: getPtySession, dropSession: dropPtySession,
   listSessions: listPtySessions, normSession } = require('./pty');
 
@@ -201,7 +203,7 @@ async function testLlm(cfg) {
 
 // ── 一次**非流式**问答（给"让模型自己挑形象"这种内部小任务用）──────────────
 // 跟对话那条流式路完全分开：这里只要一个完整回包、不要 SSE、不进任何存档。
-// 两种协议各写一遍报文（跟 callRealLLM / callAnthropic 那两份是同源约定，别各改各的）。
+// 两种协议各写一遍报文（跟 callOpenAIOnce / callAnthropicOnce 那两份是同源约定，别各改各的）。
 async function chatOnce(cfg, sys, user, maxTokens) {
   const base = String((cfg && cfg.baseUrl) || '').trim().replace(/\/+$/, '');
   if (!base) return { ok: false, error: '缺少 API 地址' };
@@ -921,6 +923,10 @@ function toChunks(body) {
  */
 function agentMoodOpts(body) {
   const persona = moodp.normPersona(body && body.persona);
+  // convId 决定「私有技能」看得见哪些（skills.listSkills 用）。必须按 CONV_ID_RE 洗过 ——
+  // 它会拼进文件路径，带 ../ 就能读到别人的技能库。前端传的是 tab.id，本来就合规，
+  // 这里洗一遍是防直接打 API 的那种用法。
+  const convId = String((body && body.convId) || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40);
   const raw = (body && body.mood && typeof body.mood === 'object') ? body.mood : null;
   let mood = null;
   if (raw && moodp.STATES[raw.state]) {
@@ -933,7 +939,7 @@ function agentMoodOpts(body) {
       minutes: (isFinite(mins) && mins >= 0) ? mins : 0,
     };
   }
-  return { persona, mood };
+  return { persona, mood, convId, shellPolicy: toolrun.normPolicy(body && body.shellPolicy) };
 }
 
 async function streamAgent(res, text, history, llm, opts) {
@@ -948,7 +954,7 @@ async function streamAgent(res, text, history, llm, opts) {
   // 走真模型还是演示用的假 agent，**只看这个对话自己带没带配置**（地址+Key 都有）：
   // 不再看任何进程级状态 —— 同一个后端进程里，A 对话可以接真模型、B 对话还在演示模式。
   const cfg = llmOf(llm);
-  if (cfg) { await callRealLLM(res, emit, text, history, cfg, opts); res.end(); return; }
+  if (cfg) { await agentLoop(res, emit, text, history, cfg, opts); res.end(); return; }
 
   // 真 LLM 的 token 会随意切开 [[mood:...]]，交给解析器跨片段还原
   const parser = new moodp.MoodStreamParser(facesFromPacks());
@@ -1107,30 +1113,33 @@ async function repairMood(cfg, faces, text) {
 // 真 LLM（SSE 流式）。两套协议：OpenAI 兼容 /chat/completions 与 Anthropic 原生 /messages。
 // 心情标记 [[mood:...]] 仍由原解析器处理，所以真模型只要按协议在正文里声明情绪，
 // 前端/角色链路一行都不用改。
-async function callRealLLM(res, emit, text, history, cfg, opts) {
-  if (activeProvider(cfg) === 'anthropic') { await callAnthropic(res, emit, text, history, cfg, opts); return; }
+async function callOpenAIOnce(res, emit, messages, cfg, opts, useTools) {
   const base = (cfg.baseUrl || '').replace(/\/+$/, '');
-  if (!base) { emit({ t: 'error', text: 'LLM 未配置：缺少 API 地址' }); return; }
+  if (!base) return { ok: false, error: { status: 0, detail: '', text: 'LLM 未配置：缺少 API 地址' } };
   const url = base.replace(/\/v1$/, '') + '/v1/chat/completions';   // 兼容带或不带 /v1 的地址
-  // opts = { persona, mood }：性格 + "此刻心情"。心情那一段是**情绪记忆**的关键，
-  // 见 moodprotocol.js 的 moodBriefing。
-  const sys = moodp.buildSystemPrompt(facesFromPacks(), opts);
-  const messages = [{ role: 'system', content: sys }, ...buildHistory(history, text)];
-  messages.push({ role: 'user', content: text });
+  const body = {
+    model: cfg.model || 'gpt-3.5-turbo',
+    stream: true,
+    messages,
+    temperature: 0.7,
+  };
+  // tools 只在原生模式带；带不带由外层决定（降级后就不再带，见 agentLoop）
+  if (useTools) { body.tools = toolrun.TOOL_SPEC; body.tool_choice = 'auto'; }
 
   let resp;
   try {
     resp = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + cfg.apiKey },
-      body: JSON.stringify({ model: cfg.model || 'gpt-3.5-turbo', stream: true, messages, temperature: 0.7 }),
+      body: JSON.stringify(body),
     });
-  } catch (e) { emit({ t: 'error', text: '连不上 LLM：' + e.message }); return; }
+  } catch (e) {
+    return { ok: false, error: { status: 0, detail: '', text: '连不上 LLM：' + e.message } };
+  }
   if (!resp.ok) {
     let detail = '';
-    try { detail = (await resp.text()).slice(0, 240); } catch (e) {}
-    emit({ t: 'error', text: `LLM 返回 ${resp.status}：${detail}` });
-    return;
+    try { detail = (await resp.text()).slice(0, 400); } catch (e) {}
+    return { ok: false, error: { status: resp.status, detail, text: `LLM 返回 ${resp.status}：${detail.slice(0, 240)}` } };
   }
 
   const reader = resp.body.getReader();
@@ -1138,6 +1147,9 @@ async function callRealLLM(res, emit, text, history, cfg, opts) {
   let buf = '', tokens = 0, lastMood = null, full = '';
   const parser = new moodp.MoodStreamParser(facesFromPacks());
   const trimLead = makeLeadTrimmer();
+  // 工具调用是**分片**来的：第一片给 id + name，后面每片往 arguments 上拼一段 JSON 字符串。
+  // 所以只能按 index 攒，不能见到一片就当一个完整调用。
+  const tc = new Map();
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -1150,7 +1162,25 @@ async function callRealLLM(res, emit, text, history, cfg, opts) {
         const data = line.slice(5).trim();
         if (data === '[DONE]') continue;
         let j; try { j = JSON.parse(data); } catch (e) { continue; }
-        const delta = j.choices && j.choices[0] && j.choices[0].delta ? (j.choices[0].delta.content || '') : '';
+        if (j.error) {
+          const msg = (j.error && j.error.message) || '未知错误';
+          emit({ t: 'thinking', text: '模型报错：' + String(msg).slice(0, 200) });
+          continue;
+        }
+        const ch = j.choices && j.choices[0];
+        if (!ch) continue;
+        const d = ch.delta || {};
+        if (Array.isArray(d.tool_calls)) {
+          for (const part of d.tool_calls) {
+            const k = (part.index === undefined || part.index === null) ? 0 : part.index;
+            const cur = tc.get(k) || { id: '', name: '', args: '' };
+            if (part.id) cur.id = part.id;
+            if (part.function && part.function.name) cur.name = part.function.name;
+            if (part.function && typeof part.function.arguments === 'string') cur.args += part.function.arguments;
+            tc.set(k, cur);
+          }
+        }
+        const delta = d.content || '';
         if (!delta) continue;
         const taken = parser.feed(delta);
         for (const m of taken.moods) { lastMood = m; emit({ t: 'mood', ...m, src: 'agent' }); moodLogLine('stream', m, full); }
@@ -1158,39 +1188,44 @@ async function callRealLLM(res, emit, text, history, cfg, opts) {
         if (s) { emit({ t: 'token', text: s }); tokens++; full += s; }
       }
     }
-  } catch (e) { emit({ t: 'error', text: '读取 LLM 流失败：' + e.message }); }
+  } catch (e) {
+    return { ok: false, error: { status: 0, detail: '', text: '读取 LLM 流失败：' + e.message } };
+  }
   const tail = parser.flush();
   for (const m of tail.moods) { lastMood = m; emit({ t: 'mood', ...m, src: 'agent' }); moodLogLine('stream', m, full); }
   const ts = trimLead(tail.text);
   if (ts) { emit({ t: 'token', text: ts }); tokens++; full += ts; }
-  // 整轮一条标记都没有 —— 模型把协议忘了。拿它刚说的正文单独补问一次（见 repairMood）。
-  if (!lastMood && full.trim()) {
-    const m = await repairMood(cfg, facesFromPacks(), full);
-    if (m) { lastMood = m; emit({ t: 'mood', ...m, src: 'agent' }); moodLogLine('repair', m, full); }
-  }
-  emit({ t: 'done', tokens: Math.max(1, tokens), mood: lastMood || undefined });
+
+  const toolCalls = [...tc.entries()].sort((a, b) => a[0] - b[0])
+    .map(([k, v]) => ({ id: v.id || ('call_' + k + '_' + Date.now()), name: v.name || 'shell', args: v.args }))
+    .filter((c) => c.name);
+
+  return { ok: true, text: full, tokens, mood: lastMood, toolCalls };
 }
 
 // Anthropic 原生（Claude）：POST /v1/messages，x-api-key 头，SSE 事件是
 // content_block_delta{ delta:{ type:'text_delta', text } }，跟 OpenAI 的 choices[0].delta 不是一回事。
 // 两个 Anthropic 特有的坑：system 必须单独字段（不能塞进 messages）；
 // user/assistant 必须严格交替（连续同角色要合并），否则 400。
-async function callAnthropic(res, emit, text, history, cfg, opts) {
+async function callAnthropicOnce(res, emit, messages, cfg, opts, useTools) {
   const base = (cfg.baseUrl || '').replace(/\/+$/, '');
-  if (!base) { emit({ t: 'error', text: 'LLM 未配置：缺少 API 地址' }); return; }
+  if (!base) return { ok: false, error: { status: 0, detail: '', text: 'LLM 未配置：缺少 API 地址' } };
   const url = base.replace(/\/v1$/, '') + '/v1/messages';
-  const sys = moodp.buildSystemPrompt(facesFromPacks(), opts);
+  const sysMsg = messages.find((m) => m.role === 'system');
+  const sys = (sysMsg && sysMsg.content) || moodp.buildSystemPrompt(facesFromPacks(), opts);
+  const conv = toAnthropicMessages(messages);
+  const lastUser = [...messages].reverse().find((m) => m.role === 'user');
 
-  const raw = [...buildHistory(history, text), { role: 'user', content: text }];
-  // 合并连续同角色 + 保证首条是 user（Anthropic 要求严格交替，否则 400）
-  const messages = [];
-  for (const m of raw) {
-    const prev = messages[messages.length - 1];
-    if (prev && prev.role === m.role) prev.content += '\n' + m.content;
-    else messages.push({ role: m.role, content: m.content });
-  }
-  while (messages.length && messages[0].role !== 'user') messages.shift();
-  if (!messages.length) messages.push({ role: 'user', content: text });
+  const body = {
+    model: cfg.model || 'claude-3-5-sonnet-latest',
+    // 1024 是以前纯聊天时定的；带工具时一轮里可能既要说话又要给 tool_use，
+    // 太短会被 stop_reason=max_tokens 截断（表现是话说到一半没了、工具也没调），所以抬到 2048。
+    max_tokens: 2048,
+    system: sys,
+    messages: conv.length ? conv : [{ role: 'user', content: String((lastUser && lastUser.content) || '') }],
+    stream: true,
+  };
+  if (useTools) { body.tools = toolrun.ANTHROPIC_TOOLS; }
 
   let resp;
   try {
@@ -1202,20 +1237,15 @@ async function callAnthropic(res, emit, text, history, cfg, opts) {
         'x-api-key': cfg.apiKey,
         'anthropic-version': ANTHROPIC_VERSION,
       },
-      body: JSON.stringify({
-        model: cfg.model || 'claude-3-5-sonnet-latest',
-        max_tokens: 1024,
-        system: sys,
-        messages,
-        stream: true,
-      }),
+      body: JSON.stringify(body),
     });
-  } catch (e) { emit({ t: 'error', text: '连不上 LLM：' + e.message }); return; }
+  } catch (e) {
+    return { ok: false, error: { status: 0, detail: '', text: '连不上 LLM：' + e.message } };
+  }
   if (!resp.ok) {
     let detail = '';
-    try { detail = (await resp.text()).slice(0, 240); } catch (e) {}
-    emit({ t: 'error', text: `LLM 返回 ${resp.status}：${detail}` });
-    return;
+    try { detail = (await resp.text()).slice(0, 400); } catch (e) {}
+    return { ok: false, error: { status: resp.status, detail, text: `LLM 返回 ${resp.status}：${detail.slice(0, 240)}` } };
   }
 
   const reader = resp.body.getReader();
@@ -1223,6 +1253,9 @@ async function callAnthropic(res, emit, text, history, cfg, opts) {
   let buf = '', tokens = 0, lastMood = null, full = '';
   const parser = new moodp.MoodStreamParser(facesFromPacks());
   const trimLead = makeLeadTrimmer();
+  // tool_use 是独立的 content block：start 时给 id/name，之后用 input_json_delta 逐片拼 input。
+  // 它和 text_delta 共用同一串 SSE，靠 delta.type 分开，绝不能把 partial_json 当正文 emit 出去。
+  const blocks = new Map();
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -1235,10 +1268,25 @@ async function callAnthropic(res, emit, text, history, cfg, opts) {
         const data = line.slice(5).trim();
         if (data === '[DONE]') continue;
         let j; try { j = JSON.parse(data); } catch (e) { continue; }
+        if (j.type === 'error') {
+          const msg = (j.error && j.error.message) || '未知错误';
+          emit({ t: 'thinking', text: '模型报错：' + String(msg).slice(0, 200) });
+          continue;
+        }
+        if (j.type === 'content_block_start' && j.content_block && j.content_block.type === 'tool_use') {
+          blocks.set(j.index, { id: j.content_block.id || '', name: j.content_block.name || '', args: '' });
+          continue;
+        }
+        if (j.type === 'content_block_delta' && j.delta) {
+          if (j.delta.type === 'input_json_delta') {
+            const b = blocks.get(j.index);
+            if (b) b.args += String(j.delta.partial_json || '');
+            continue;
+          }
+        }
         let delta = '';
         if (j.type === 'content_block_delta' && j.delta && typeof j.delta.text === 'string') delta = j.delta.text;
         else if (j.type === 'message_delta' && j.delta && typeof j.delta.text === 'string') delta = j.delta.text;
-        if (j.type === 'error' && j.error && j.error.message) { emit({ t: 'error', text: String(j.error.message).slice(0, 200) }); }
         if (!delta) continue;
         const taken = parser.feed(delta);
         for (const m of taken.moods) { lastMood = m; emit({ t: 'mood', ...m, src: 'agent' }); moodLogLine('stream', m, full); }
@@ -1246,18 +1294,265 @@ async function callAnthropic(res, emit, text, history, cfg, opts) {
         if (s) { emit({ t: 'token', text: s }); tokens++; full += s; }
       }
     }
-  } catch (e) { emit({ t: 'error', text: '读取 LLM 流失败：' + e.message }); }
+  } catch (e) {
+    return { ok: false, error: { status: 0, detail: '', text: '读取 LLM 流失败：' + e.message } };
+  }
   const tail = parser.flush();
   for (const m of tail.moods) { lastMood = m; emit({ t: 'mood', ...m, src: 'agent' }); moodLogLine('stream', m, full); }
   const ts = trimLead(tail.text);
   if (ts) { emit({ t: 'token', text: ts }); tokens++; full += ts; }
-  // 整轮一条标记都没有 —— 模型把协议忘了。拿它刚说的正文单独补问一次（见 repairMood）。
-  if (!lastMood && full.trim()) {
-    const m = await repairMood(cfg, facesFromPacks(), full);
-    if (m) { lastMood = m; emit({ t: 'mood', ...m, src: 'agent' }); moodLogLine('repair', m, full); }
-  }
-  emit({ t: 'done', tokens: Math.max(1, tokens), mood: lastMood || undefined });
+
+  const toolCalls = [...blocks.entries()].sort((a, b) => a[0] - b[0])
+    .map(([k, v]) => ({ id: v.id || ('toolu_' + k + '_' + Date.now()), name: v.name || 'shell', args: v.args }))
+    .filter((c) => c.name);
+
+  return { ok: true, text: full, tokens, mood: lastMood, toolCalls };
 }
+
+// ─────────────────────────────── 工具循环（skills 自举的执行面）
+//
+// 设计（用户 2026-10-26）：「一开始默认 agent 只有调用 shell 的功能，agent 可以用 shell
+// 写入文件或者其他操作，来自己给自己加 skill」。所以这里的循环只有一个工具，
+// 而"成长"发生在磁盘上：技能是 SKILL.md，写完下一轮就出现在 system 提示词的清单里
+// （见 skills.skillsBrief —— 它每轮现扫，不缓存）。
+//
+// 两条协议，按端点能力自动选：
+//   native —— OpenAI tools / Anthropic tool_use。可靠，模型不会写错格式。
+//   text   —— 端点不收 tools 时降级：模型输出 ```sh 代码块，这里截获执行再把输出贴回去。
+// 降级**只在第一轮**发生：第一轮就 400/422 说明端点根本不认 tools；如果第一轮成功、
+// 后面才出错，那是别的问题，硬降级只会把已有状态搅乱。
+const MAX_TOOL_ROUNDS = 8;      // 最多几次「模型想调用工具 → 执行 → 再问」的往返
+const MAX_TOOL_CALLS = 20;      // 一轮对话里总共允许多少次真实执行（防止它刷屏式跑命令）
+
+const NATIVE_TOOL_BRIEF = [
+  '## 工具（shell）',
+  '你有且只有一个工具：`shell` —— 是真的在这台 Windows 机器上执行 PowerShell，不是演示。',
+  '- 想做的事**直接做**：要看文件就去看，要跑就跑，要改就改。别只给建议、别问"需要我帮你执行吗"。',
+  '- 每次调用都是**全新进程**：上一条里 `cd` 过、设过的变量这里都不在。'
+    + '要换目录就在同一条命令里写 `cd <目录>; <实际命令>`。',
+  '- 执行结果会自动回到你手上，可以连着做多步（最多 ' + MAX_TOOL_ROUNDS + ' 个来回）。',
+  '- 做不到的事（没权限、没有那个程序、网断了）就直说做不到，**绝不假装做过了**。',
+  '- 你还能给自己加技能：见上面「技能（skills）」那一节，那是你长本事的方式。',
+].join('\n');
+
+/** 单行化 + 截断（往界面上显示用，不能把整段输出塞进去） */
+function shortLine(s, n) {
+  const t = String(s === undefined || s === null ? '' : s).replace(/\s+/g, ' ').trim();
+  return t.length > n ? t.slice(0, n) + '…' : t;
+}
+
+/** 端点是不是在说"我不认 tools 这个参数"（各种中转的措辞差别很大，只能宽着认） */
+function looksLikeNoTools(detail) {
+  const d = String(detail || '');
+  if (!d) return false;
+  return /tool|function|schema|unsupported|invalid[_ -]?param|not\s*support/i.test(d);
+}
+
+/** 从一段正文里捞 ```sh / ```powershell 代码块（文本协议降级用） */
+function shellBlocks(s) {
+  const out = [];
+  const re = /```(?:sh|bash|powershell|ps1|pwsh|shell)?\s*\r?\n([\s\S]*?)```/gi;
+  let m;
+  while ((m = re.exec(String(s || '')))) {
+    const b = m[1].trim();
+    if (b) out.push(b);
+  }
+  return out;
+}
+
+/**
+ * 内部统一用 OpenAI 的 messages 形状（assistant.tool_calls / role:'tool'），
+ * 发给 Anthropic 前换成它那套（tool_use block / tool_result block）。
+ *
+ * Anthropic 的三条硬要求，少一条就 400：
+ *   ① tool_use 必须在 assistant 的 content **数组**里；
+ *   ② tool_result 必须在 **user** 消息里，且 tool_use_id 对得上；
+ *   ③ user/assistant 必须严格交替（连续同角色要并进同一条）。
+ */
+function toAnthropicMessages(list) {
+  const out = [];
+  for (const m of list) {
+    if (!m || m.role === 'system') continue;
+    if (m.role === 'tool') {
+      const block = { type: 'tool_result', tool_use_id: m.tool_call_id, content: String(m.content === undefined || m.content === null ? '' : m.content) };
+      const prev = out[out.length - 1];
+      if (prev && prev.role === 'user' && Array.isArray(prev.content)) prev.content.push(block);
+      else out.push({ role: 'user', content: [block] });
+      continue;
+    }
+    if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+      const blocks = [];
+      if (m.content) blocks.push({ type: 'text', text: String(m.content) });
+      for (const c of m.tool_calls) {
+        let input = {};
+        try { input = JSON.parse((c.function && c.function.arguments) || '{}'); } catch (e) { input = {}; }
+        if (!input || typeof input !== 'object' || Array.isArray(input)) input = {};
+        blocks.push({ type: 'tool_use', id: c.id, name: c.function.name, input });
+      }
+      out.push({ role: 'assistant', content: blocks });
+      continue;
+    }
+    const role = m.role === 'agent' ? 'assistant' : m.role;
+    const text = String(m.content === undefined || m.content === null ? '' : m.content);
+    const prev = out[out.length - 1];
+    if (prev && prev.role === role) {
+      if (Array.isArray(prev.content)) prev.content.push({ type: 'text', text });
+      else prev.content += '\n' + text;
+      continue;
+    }
+    out.push({ role, content: text });
+  }
+  while (out.length && out[0].role !== 'user') out.shift();
+  return out;
+}
+
+/** 这个对话这一轮该看到的 system 提示词：人设 + 心情 + 技能清单 + 工具说明 */
+function buildAgentSystem(faces, opts, mode, convId) {
+  return [
+    moodp.buildSystemPrompt(faces, opts),
+    '',
+    skills.skillsBrief(convId),
+    '',
+    mode === 'text' ? toolrun.TEXT_PROTOCOL_BRIEF : NATIVE_TOOL_BRIEF,
+  ].join('\n');
+}
+
+/**
+ * 一次完整的 agent 回合：调用 → 要工具就跑 → 把结果喂回去 → 再调用 …… 直到它不再要工具。
+ *
+ * 几个必须守住的边界：
+ *   · **最后一轮强制收尾**：走到 MAX_TOOL_ROUNDS 就追加一句"别再调工具了，直接给结论"，
+ *     并且**不带 tools** 再请求一次。否则模型会在"我想要工具"和"没有工具"之间空转，
+ *     用户看到的是一轮没有结论的回答。
+ *   · **同一条命令连跑 3 次就拦**：它在打转（命令没输出 / 它没读结果）。拦下来告诉它看上面，
+ *     比让它刷满 20 次调用有用。
+ *   · **被策略拦下的不算执行**：runShell 返回 refused，这里照样把原因回给它，
+ *     但不计进 toolsUsed —— 免得一个被拒的命令把额度吃光。
+ */
+async function agentLoop(res, emit, text, history, cfg, opts) {
+  const isAnth = activeProvider(cfg) === 'anthropic';
+  const callOnce = isAnth ? callAnthropicOnce : callOpenAIOnce;
+  const faces = facesFromPacks();
+  const convId = String((opts && opts.convId) || '');
+  const policy = toolrun.normPolicy(opts && opts.shellPolicy);
+  const ctx = { policy, guardRules: skills.guardRules(convId), convId };
+
+  let mode = 'native';
+  const messages = [
+    { role: 'system', content: buildAgentSystem(faces, opts, mode, convId) },
+    ...buildHistory(history, text),
+    { role: 'user', content: text },
+  ];
+
+  let tokens = 0, lastMood = null, lastFull = '', used = 0, rounds = 0, degraded = false;
+  const cmdSeen = new Map();
+
+  for (let step = 0; step <= MAX_TOOL_ROUNDS; step++) {
+    // system **每一轮都现算**：技能是磁盘上的文件，agent 这一轮刚用 shell 写出来的那个，
+    // 下一轮请求里就该出现在清单里 —— 自举的全部意义就在这。扫目录 + 读几个 SKILL.md
+    // 是毫秒级的，相对一次 LLM 往返可以忽略；换成"进循环前算一次"，
+    // 就成了"写完要等用户再说一句话才生效"，那等于没自举。
+    messages[0] = { role: 'system', content: buildAgentSystem(faces, opts, mode, convId) };
+    const lastChance = step === MAX_TOOL_ROUNDS;
+    if (lastChance) {
+      messages.push({ role: 'user', content: '（工具调用次数已经用完了。请用现有信息直接给出结论，不要再调用工具。）' });
+    }
+    const r = await callOnce(res, emit, messages, cfg, opts, !lastChance && mode === 'native');
+    if (!r.ok) {
+      const err = r.error || {};
+      if (!degraded && mode === 'native' && step === 0
+        && (err.status === 400 || err.status === 422) && looksLikeNoTools(err.detail)) {
+        degraded = true;
+        mode = 'text';
+        messages[0] = { role: 'system', content: buildAgentSystem(faces, opts, mode, convId) };
+        emit({ t: 'thinking', text: '这个端点不收 tools 参数，改用 ```sh 代码块约定继续。' });
+        step--;                      // 这一趟不算一轮：它还没真的跑起来
+        continue;
+      }
+      emit({ t: 'error', text: err.text || 'LLM 调用失败' });
+      emit({ t: 'done', tokens: Math.max(1, tokens), mood: lastMood || undefined, rounds, tools: used });
+      return;
+    }
+
+    tokens += r.tokens || 0;
+    if (r.mood) lastMood = r.mood;
+    lastFull = r.text || '';
+
+    let calls = (r.toolCalls || []).map((c) => ({ id: c.id, name: c.name || 'shell', args: c.args }));
+    if (mode === 'text' && !calls.length) {
+      const blocks = shellBlocks(lastFull);
+      if (blocks.length) {
+        if (blocks.length > 1) {
+          emit({ t: 'thinking', text: '这轮给了 ' + blocks.length + ' 个代码块，只执行最后一个（约定是一次一个）。' });
+        }
+        calls = [{ id: 'txt' + step, name: 'shell', args: JSON.stringify({ command: blocks[blocks.length - 1] }) }];
+      }
+    }
+
+    if (!calls.length) break;                       // 不要工具了 = 这就是最终回答
+    if (lastChance) {                               // 强制收尾那趟它还在要工具：按它上面说的话收
+      emit({ t: 'thinking', text: '它还想调用工具，但次数已用完，就按已有的回答收尾了。' });
+      break;
+    }
+
+    if (mode === 'native') {
+      messages.push({
+        role: 'assistant',
+        content: r.text || null,
+        tool_calls: calls.map((c) => ({
+          id: c.id, type: 'function',
+          function: { name: c.name, arguments: c.args || '{}' },
+        })),
+      });
+    } else {
+      messages.push({ role: 'assistant', content: r.text || '' });
+    }
+
+    for (const c of calls) {
+      let args = null, bad = '';
+      try { args = JSON.parse(c.args || '{}'); } catch (e) { bad = '参数不是合法 JSON（' + e.message + '）'; }
+      if (!bad && (!args || typeof args !== 'object' || Array.isArray(args))) { bad = 'arguments 必须是 JSON 对象'; args = {}; }
+      const cmd = String((args && args.command) || '');
+      let outText, refused = false;
+
+      if (bad) {
+        outText = '[没有执行] ' + bad + '。请重新调用，arguments 必须是 JSON 对象。';
+        refused = true;
+      } else if (used >= MAX_TOOL_CALLS) {
+        outText = '[没有执行] 这次对话的工具执行次数用完（' + MAX_TOOL_CALLS + ' 次）。请直接给结论。';
+        refused = true;
+      } else {
+        const n = (cmdSeen.get(cmd) || 0) + 1;
+        cmdSeen.set(cmd, n);
+        emit({ t: 'tool', name: c.name, arg: shortLine(cmd, 60) });
+        if (n >= 3) {
+          outText = '[没有执行] 同一条命令已经跑了 ' + (n - 1) + ' 次，结果就在上面。'
+            + '这是在打转——换个做法，或者直接说明卡在哪。';
+          refused = true;
+        } else {
+          const out = await toolrun.runShell(args, ctx);
+          outText = toolrun.toolResultText(out);
+          if (!out.refused) used++;
+          else emit({ t: 'thinking', text: '命令没执行：' + shortLine(out.stderr, 140) });
+        }
+      }
+
+      emit({ t: 'tool_result', text: shortLine(outText, 300) });
+      if (mode === 'native') messages.push({ role: 'tool', tool_call_id: c.id, content: outText });
+      else messages.push({ role: 'user', content: '（命令输出）\n' + outText });
+      if (refused) cmdSeen.delete(cmd);
+    }
+    rounds++;
+  }
+
+  // 心情兜底：整轮一条标记都没有 —— 拿它最后说的那段正文补问一次（见 repairMood）
+  if (!lastMood && lastFull.trim()) {
+    const m = await repairMood(cfg, faces, lastFull);
+    if (m) { lastMood = m; emit({ t: 'mood', ...m, src: 'agent' }); moodLogLine('repair', m, lastFull); }
+  }
+  emit({ t: 'done', tokens: Math.max(1, tokens), mood: lastMood || undefined, rounds, tools: used });
+}
+
 
 /** 当前所有素材包的表情标签（给 LLM 的 system 提示词用） */
 function facesFromPacks() {
@@ -1331,6 +1626,9 @@ function readConv(id) {
       persona: moodp.normPersona(j.persona),
       // 这个对话自己的心情快照（没有 / 脏了 → null，前端就当"从头开始"）
       mood: moodp.normMoodSnap(j.mood),
+      // shell 策略：allow（全放行，默认）/ guard（按技能里的 guard.json 拦）/ deny（全拦）。
+      // 脏值回落 allow —— 与 toolrun.normPolicy 同一套判定，别在这儿另立一套。
+      shell: toolrun.normPolicy(j.shell),
     };
   } catch (e) { return null; }
 }
@@ -1341,7 +1639,7 @@ function normCi(v) {
   return (Number.isInteger(n) && n >= 0 && n < CONV_MAX) ? n : null;
 }
 
-function writeConv(id, title, msgs, llm, keep, charpack, charpackPicked, ci, persona, mood) {
+function writeConv(id, title, msgs, llm, keep, charpack, charpackPicked, ci, persona, mood, shellPolicy) {
   if (!CONV_ID_RE.test(String(id || ''))) return false;
   const clean = cleanMsgs(msgs);
   const cfg = llmOf(llm);
@@ -1372,6 +1670,8 @@ function writeConv(id, title, msgs, llm, keep, charpack, charpackPicked, ci, per
       // 心情：**每个对话一份**（2026-10-17 起）。洗完再存 —— 前端是唯一的写入方，
       // 但存档文件用户能直接改，脏值不能直接喂回 restore（见 normMoodSnap）。
       ...(moodSnap ? { mood: moodSnap } : {}),
+      // shell 策略：'allow' 是"没设置"（默认全放行），不写这个字段 —— 别把老对话都塞一个
+      ...(toolrun.normPolicy(shellPolicy) === 'allow' ? {} : { shell: toolrun.normPolicy(shellPolicy) }),
     };
     fs.writeFileSync(convPath(id), JSON.stringify(data));
     return true;
@@ -1572,6 +1872,19 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, await pickArt(cfg, body.packs));
     }
     if (p === '/api/charpacks') return sendJson(res, listCharpacks());
+    // 技能清单（只读）：给界面和调试用，agent 那边走的是 system 提示词里那份清单。
+    // ?conv=<对话 id> 决定私有技能能看见哪些。
+    if (p === '/api/skills') {
+      const cid = String(u.searchParams.get('conv') || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40);
+      return sendJson(res, {
+        root: skills.SKILLS_DIR,
+        publicDir: skills.PUBLIC_DIR,
+        privateDir: skills.PRIVATE_DIR,
+        list: skills.listSkills(cid).map((s) => ({
+          name: s.name, description: s.description, scope: s.scope, path: s.path,
+        })),
+      });
+    }
     // 启动记录：前端启动画面取回去回放（每行都是真事，见 server/bootlog.js）
     if (p === '/api/bootlog') return sendJson(res, bootlog.snapshot({ port: PORT }));
 
@@ -1640,7 +1953,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/conv' && req.method === 'POST') {
       const b = JSON.parse((await readBody(req)) || '{}');
       return sendJson(res, {
-        ok: writeConv(b.id, b.title, b.msgs, b.llm, b.keep, b.charpack, b.charpackPicked, b.ci, b.persona, b.mood),
+        ok: writeConv(b.id, b.title, b.msgs, b.llm, b.keep, b.charpack, b.charpackPicked, b.ci, b.persona, b.mood, b.shell),
       });
     }
     if (p === '/api/conv/delete' && req.method === 'POST') {
@@ -1726,7 +2039,16 @@ const server = http.createServer(async (req, res) => {
       fs.createReadStream(full).pipe(res);
     });
   } catch (e) {
-    sendJson(res, { error: String(e && e.message || e) }, 500);
+    // ⚠ 流式接口（/api/agent、/api/shell、/api/pty/stream）这时候**头已经发出去了**，
+    // 再 sendJson 会抛 ERR_HTTP_HEADERS_SENT 把整个后端进程带走（2026-10-26 接工具循环时踩到：
+    // 一个上游异常就变成"HUD 连不上后端"）。头发过了就按它们自己的协议补一条错误事件。
+    const msg = String((e && e.message) || e);
+    if (res.headersSent) {
+      try { res.write(JSON.stringify({ t: 'error', text: '后端出错：' + msg }) + '\n'); } catch (e2) { /* 连接已断 */ }
+      try { res.end(); } catch (e2) { /* 已经关了 */ }
+      return;
+    }
+    sendJson(res, { error: msg }, 500);
   }
 });
 

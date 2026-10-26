@@ -96,6 +96,12 @@ export class AgentConv {
     // 它喂进 system 提示词里那段人设 —— 同一套心情机制，换个性格就是另一个人
     // （用户："要让 llm 的情绪更拟人……要像具有情感那样"，并选择"配置时设置"）。
     this.persona = 'default';
+    // shell 策略（2026-10-26 接工具循环时加）：agent 能用 shell 干活，这里管"放多松"。
+    //   allow 全放行（默认，用户要的「权限越高越好」）
+    //   guard 按技能里 guard.json 的规则拦
+    //   deny  全拦（只说话，不动机器）
+    // 跟 persona / charpack 同一层：**每个对话一份**，用 `/shell` 命令切，存进这个对话的存档。
+    this.shellPolicy = 'allow';
     // 摊开着的**配置表单**（null = 这个对话没在配）。跟着对话走而不是跟着面板走：
     // 切走只是看不见，填到一半的内容不会丢、也不会被当成别的对话的配置。
     this.cfg = null;
@@ -304,7 +310,9 @@ export class AgentConv {
       // llm = **这个对话自己的**配置。不传的话后端无从判断这个对话接的哪家，
     // 只能退回演示用的假 agent —— 那正是"明明配过却还在演示"的老毛病。
     }, () => { this.busy = false; if (this.onDirty) this.onDirty(this); }, history, this.llm,
-    { persona: this.persona, mood: this._moodBrief() });
+    { persona: this.persona, mood: this._moodBrief(),
+      // convId 决定后端看得见哪些**私有技能**；shellPolicy 决定工具放多松
+      convId: this.id, shellPolicy: this.shellPolicy });
   }
 
   /**
@@ -817,6 +825,31 @@ export class AgentPanel {
       this.configOpen();
       return true;
     }
+    // /shell：agent 能调用 shell 之后，"放多松"必须有个当场能改的开关。
+    // 输出**故意全用英文**：它是命令回显（`shell = allow` 跟 `a = 1` 一样是状态，不是文案），
+    // 按 i18n 第 3 条的约定这类东西不进字典 —— 翻成五种语言反而更难认
+    // （而且 tlh 得现编克林贡文，那纯属给自己找事）。
+    if (name === 'shell') {
+      const v = args[0] || '';
+      const usage = 'usage: /shell allow | guard | deny';
+      if (!v) {
+        // 策略挂在**对话**上（tab），不挂在面板上 —— 面板是容器，八个对话各有各的策略
+        const cur = (this.tab && this.tab.shellPolicy) || 'allow';
+        this.push('info', 'shell = ' + cur + '   ' + usage);
+        return true;
+      }
+      if (v !== 'allow' && v !== 'guard' && v !== 'deny') {
+        this.push('info', usage);
+        return true;
+      }
+      const t0 = this.tab;
+      if (t0) {
+        t0.shellPolicy = v;
+        this._markDirty(t0);                 // 立刻落盘：跟性格/形象一样，属于这个对话
+      }
+      this.push('info', 'shell = ' + v);
+      return true;
+    }
     return false;
   }
 
@@ -877,6 +910,7 @@ export class AgentPanel {
           mood: conv.mood ? conv.mood.snapshot() : null,
           // 色号跟着对话存：重启后"那个颜色 = 那个对话"的对应关系不能断（2026-10-15 用户报的）。
           ci: conv.ci,
+          shell: conv.shellPolicy,
         });
       } catch (e) { /* 后端没起来就算了 */ }
     }
@@ -932,6 +966,8 @@ export class AgentPanel {
       // 以及性格（见 AgentConv.persona）——脏值一律回落 default，不猜
       t.persona = normPersona(c.persona);
       prevPersona = t.persona;
+      // shell 策略：拖脏了回落 allow（跟后端 toolrun.normPolicy 同一套判定）
+      t.shellPolicy = normShell(c.shell);
       t.msgs = c.msgs.map((m) => {
         const o = { role: m.role, text: String(m.text || '') };
         if (m.result) o.result = String(m.result);
@@ -1506,6 +1542,14 @@ function normArtPick(v) {
 // 性格字段：只认这五个 id，脏值一律回落 default。
 // 跟形象不同，这里**没有「自动」**：性格不是让别人替你挑的东西，只有"没设置"（= default）。
 // 后端 normPersona 做同样的收敛，两边不会各说各话。
+// shell 策略的白名单收敛。与 server/toolrun.js 的 normPolicy 保持一致 ——
+// 那边也会洗一遍（存档文件用户能直接改），这里洗是为了界面上的状态值别是脏的。
+const SHELL_POLICIES = ['allow', 'guard', 'deny'];
+function normShell(v) {
+  const x = String(v === undefined || v === null ? '' : v).trim();
+  return SHELL_POLICIES.includes(x) ? x : 'allow';
+}
+
 function normPersona(v) {
   const s = String(v === undefined || v === null ? '' : v).trim().toLowerCase();
   return PERSONA_KEYS.includes(s) ? s : 'default';
