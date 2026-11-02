@@ -32,7 +32,7 @@ English version — [README.en.md](README.en.md)
   </details>
 - **真实终端** —— 由 ConPTY 驱动的 PTY，按键直通（模型参照 eDEX-UI / xterm.js）；vim / python / htop 等全交互程序均可运行，中文 IME 正常；支持多标签，每个标签为独立会话
 - **Agent 对话** —— 接入 OpenAI 兼容接口，流式输出。分**两层**：**agent** 与**对话**，一个 agent 可以挂多个对话。
-  点「+」是在**当前这个 agent** 里再开一个（换个人接着聊，配置/形象/性格/私有技能全都沿用）；
+  点「+」是在**当前这个 agent** 里再开一个（换个话题接着聊，配置/形象/性格/私有技能全都沿用）；
   想换个模型或换个人设就 `/agent new`，那会开一个**全新的 agent**、表单从零填，两边互不影响。
   **LLM 配置记在 agent 上，该 agent 的所有对话共用同一份**；框顶右上角显示**当前对话**实际连接的模型 id（不写死），未接入时显示 `local · 未接 LLM`。输入框里 **Enter 换行、`Ctrl+Enter` 发送**（左右 Ctrl 都认；`Alt+Enter` 同样发送 —— 右 Ctrl 被输入法占着时用它）
   <details><summary>对话的存档与删除（展开）</summary>
