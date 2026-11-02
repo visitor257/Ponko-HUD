@@ -62,6 +62,14 @@ English version — [中文版 / Chinese version](README.md)
   conversation (tab included). A conversation counts as configured only **after you save**.
 
   </details>
+- **NAV box** — the lower half of the left column (right under GLOBE), with three tabs:
+  `Agents` lists **every agent and the conversations hanging off it** in tree style (`├─` / `└─`), one colour
+  swatch per row matching the tab bar; clicking a conversation row jumps there (the AGENT panel follows).
+  `Skills` shows the public skills (shared by all agents) and `Private` the **current agent's** own skills —
+  name on one line, description on the next; clicking one shows its file path at the bottom of the box.
+  Making room for it is why **AGENT is now the same width and column as SHELL** (it used to span the left and
+  middle columns and sit on the floor), so the tab bar only draws **the current agent's** conversations; the
+  other agents' conversations are not deleted, they just live in NAV now (2026-11-02)
 - **Character** — the "character" row of the config form decides which character pack the right-hand panel draws:
   **auto** or any saved pack (`characters/<id>`). **The character lives on the agent too** — every conversation of
   that agent draws the same portrait, and only a different agent is a different person. With **auto**, the model
@@ -231,6 +239,8 @@ To avoid memorising hotkeys, type a **slash command** into the conversation inpu
 | Command | Effect |
 |---|---|
 | `/del chat` | requests closing the current conversation; a confirmation line is raised first, and **only Enter actually deletes** (including the `run/conversations/<id>.json` archive — there is no recycle bin) |
+| `/agent` | echoes the current agent and how many conversations it holds (`agent = …   conversations = N`); never archived, never sent to the model |
+| `/agent new` | starts a **brand-new agent** (config form from scratch); the current agent and its conversations are left exactly as they are — click back to them in NAV |
 
 - The input expresses "which one I want gone", not "delete right now": once the command matches, only the red
   bar along the bottom is raised — `Enter` confirms / `ESC` cancels / typing anything else also counts as

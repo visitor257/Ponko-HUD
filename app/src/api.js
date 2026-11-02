@@ -83,6 +83,11 @@ export const getConv = (id) => fetch('/api/conv?s=' + encodeURIComponent(id))
   .then((r) => r.json()).catch(() => null);
 export const saveConv = (c) => post('/api/conv', c);
 export const deleteConv = (id) => post('/api/conv/delete', { id });
+// 技能库清单（只读）。**按 agent 取**：私有技能属于 agent（2026-11-02），同一个 agent 的
+// 所有对话看到的是同一份。NAV 面板的 Skills / Private 两页用它，也用它发现"agent 刚用 shell
+// 自己写出来的那个新技能"（所以调用方会隔几秒重取一次，见 nav.js 的 SKILL_TTL）。
+export const listSkills = (agentId) => fetch('/api/skills?agent=' + encodeURIComponent(agentId || ''))
+  .then((r) => r.json()).catch(() => ({ list: [] }));
 
 // ── 界面状态（重启后画面要跟关掉时一样）：心情快照 + 落在哪个对话。
 //    两样都不是"内容"：心情的**权威**在对话存档里（每个对话一份），这里这份是"最后一帧"的缓存；

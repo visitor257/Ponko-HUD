@@ -10,6 +10,7 @@ import { BootScreen } from './boot.js';
 import { SysPanel } from './panels/sys.js';
 import { ShellPanel } from './panels/shell.js';
 import { AgentPanel } from './panels/agent.js';
+import { NavPanel } from './panels/nav.js';
 import { CharPanel } from './panels/char.js';
 import { GlobePanel } from './panels/globe.js';
 import { Selection } from './selection.js';
@@ -71,6 +72,7 @@ const panels = {
   globe: new GlobePanel(),
   shell: new ShellPanel(mood),
   agent: new AgentPanel(),          // 心情挂在对话身上，面板不再接一份全局 mood（见 AgentConv）
+  nav: new NavPanel(),              // 左列下半：agent / 技能 的导航框（见 panels/nav.js）
   char: null,                       // 等素材包加载完再建
 };
 panels.agent._clearHidden = () => { hidden.value = ''; };   // 关闭配置框时清空隐藏输入框
@@ -80,6 +82,12 @@ panels.agent.onDelAsk = () => armConvClose();               // /del chat 命中�
 // 这两件事只有主装配知道（packs / panels.char 都在这儿），agent.js 不认识它们。
 panels.agent.getPacks = () => packs.map((p) => ({ id: p.id, name: p.name || p.id }));
 panels.agent.onArtChange = applyConvArt;
+// NAV 只认识"哪些对话、现在在哪个"，不认识 AgentPanel 的其余部分（同 agent.getPacks 的思路）。
+// pickTab 走 selectTab：切对话这一件事只有一条路径 —— 焦点、隐藏输入框、立绘都由 afterConvChange 收尾，
+// 从树里点跟从标签栏点必须完全一样。
+panels.nav.getTabs = () => panels.agent.tabs;
+panels.nav.getActive = () => panels.agent.active;
+panels.nav.pickTab = (i) => { if (panels.agent.selectTab(i)) afterConvChange(); };
 // 调试/端到端验证入口：__panels 给面板对象，__grid 给字符缓冲（chs 是**逐格的字符**，
 // 端到端要核对"屏幕上到底写了什么字"只能从这儿读 —— canvas 里的文字读不出来）。
 if (typeof window !== 'undefined') { window.__panels = panels; window.__grid = grid; }
@@ -98,7 +106,12 @@ let packs = [], pack = null;
 
 // 布局
 //   左上 GLOBE │ 中上 SHELL │ 右列 MOOD + SYS(右下)
-//   下半 AGENT 横跨左+中两列（延伸至最左），贴地
+//   下半 NAV（左列，正对 GLOBE 下方）│ 下半 AGENT（中列，与 SHELL **同宽同列**）
+//
+// 2026-11-02 用户要求：「把 llm 框的宽度弄成跟 shell 一样。这样 llm 框左边、地球框下面就会
+// 空出位置，在那个位置上再弄一个框」—— 于是 AGENT 从"横跨左+中、贴到最左"改成"SHELL 那一列"，
+// 腾出来的左下半就是 NAV（agent / 技能 的导航框）。左右两条竖线因此都是**通高**的：
+// s1 以前只管上半（下半被 AGENT 横跨），现在整条都能拖。
 const L = { left: 34, right: 30, topH: 0.5 };
 let rects = {};
 let dragSplit = null;
@@ -124,13 +137,17 @@ function layout() {
   const sysH = Math.max(0, Math.min(SYS_H, mainH - 16));
   const charH = mainH - sysH - (sysH > 0 ? 1 : 0);
 
+  // 下半两框共用这份几何：同一 y、同一 h，只是左右分列（AGENT 与 SHELL 同宽 —— 这是用户要的）
+  const lowY = y0 + halfH + 1, lowH = mainH - halfH - 1;
+
   rects = {
     globe: { x: lx, y: y0, w: L.left, h: halfH },
+    nav: { x: lx, y: lowY, w: L.left, h: lowH },
     shell: { x: cx, y: y0, w: midW, h: halfH },
-    agent: { x: lx, y: y0 + halfH + 1, w: cx + midW - lx, h: mainH - halfH - 1 },
+    agent: { x: cx, y: lowY, w: midW, h: lowH },
     char: { x: rx, y: y0, w: rightW, h: charH },
     sys: { x: rx, y: y0 + charH + 1, w: rightW, h: sysH },
-    s1: { x: L.left, y: y0, w: SPLIT_W, h: halfH },              // 只在上半（下半被 AGENT 横跨）
+    s1: { x: L.left, y: y0, w: SPLIT_W, h: mainH },             // 通高：上半分 GLOBE|SHELL，下半分 NAV|AGENT
     s2: { x: rx - SPLIT_W, y: y0, w: SPLIT_W, h: mainH },
     hsplit: { x: lx, y: y0 + halfH, w: cx + midW - lx, h: 1 },
   };
@@ -836,6 +853,13 @@ canvas.addEventListener('mousedown', (e) => {
     if (inRect(rects.s2, c)) { dragSplit = { k: 's2', x: c.x }; return; }
     if (inRect(rects.hsplit, c)) { dragSplit = { k: 'h', y: c.y }; return; }
   }
+  // NAV：页签 / 树里的行都由它自己判（它知道每行画在哪，见 nav.js 的 _rowHits）。
+  // 排在分割条之后 —— 它的 rect 跟 s1 不重叠，放这儿只是让"拖分割条"永远优先。
+  if ((!zoom || zoom === 'nav') && inRect(rects.nav, c)) {
+    panels.nav.onClick(c.x, c.y);
+    e.preventDefault();
+    return;
+  }
   if ((!zoom || zoom === 'globe') && panels.globe.hit(c.x, c.y)) { panels.globe.onDown(c.x, c.y); return; }
   if ((!zoom || zoom === 'char') && panels.char) {
     // 点心情标签 = 手动覆盖，属于**调试入口**：默认那排标签不画（char.js 的 SHOW_MOOD_CHIPS），
@@ -899,8 +923,10 @@ canvas.addEventListener('wheel', (e) => {
   const c = cellAt(e);
   // 放大态：滚轮只给被放大那个框（放大 GLOBE 时在地球上面滚就不该滚到 SHELL 的历史）
   const p = zoom
-    ? ((zoom === 'shell' || zoom === 'agent') ? panels[zoom] : null)
-    : (inRect(rects.shell, c) ? panels.shell : inRect(rects.agent, c) ? panels.agent : null);
+    ? ((zoom === 'shell' || zoom === 'agent') ? panels[zoom] : (zoom === 'nav' ? panels.nav : null))
+    : (inRect(rects.shell, c) ? panels.shell
+      : inRect(rects.agent, c) ? panels.agent
+        : inRect(rects.nav, c) ? panels.nav : null);
   if (p && p.onWheel(e.deltaY)) { e.preventDefault(); return; }
   if ((!zoom || zoom === 'globe') && panels.globe.hit(c.x, c.y)) {
     if (panels.globe.onWheel(e.deltaY, e.deltaX)) e.preventDefault();
@@ -914,7 +940,7 @@ let sys = null, last = performance.now(), t = 0, fps = 0;
 let bootAt = Infinity;
 let openDur = 0.55;            // 每个面板“框从中心向外展开”的时长（秒），?bootdur=N 可覆盖
 let contentDur = 0.5;          // 框展开后“内容淡入”的时长（秒），随 ?bootdur 同步
-const OPEN_DELAY = { globe: 0, shell: 0.12, char: 0.06, sys: 0.2, agent: 0.16 };
+const OPEN_DELAY = { globe: 0, shell: 0.12, char: 0.06, sys: 0.2, agent: 0.16, nav: 0.1 };
 let tokWindow = [], tokRate = 0;
 setInterval(() => { tokRate = tokWindow.length; tokWindow = []; }, 1000);   // 粗估 tok/s
 async function pollSys() {
@@ -1181,6 +1207,7 @@ function frame(now) {
   } else {
     drawPanel(panels.sys, grid, C);
     drawPanel(panels.globe, grid, C);
+    drawPanel(panels.nav, grid, C);
     drawPanel(panels.shell, grid, C);
     drawPanel(panels.agent, grid, C);
     drawPanel(panels.char, grid, C);

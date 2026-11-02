@@ -1028,11 +1028,25 @@ console.log('\n── 15. 多标签对话 ──');
   chk('连焦点停在第几行都还是原来那样', a8.form.idx === 2, String(a8.form.idx));
   chk('新建标记也还在（这时取消仍然 = 撤销新建）', a8._cfgNew === true, String(a8._cfgNew));
 
-  // ^Tab（nextTab）那条路一样
-  a8.nextTab(1);
-  chk('^Tab 切走同样是"看不见"而不是删除', !a8.inConfig && a8.tabs.includes(pending), String(a8.inConfig));
-  a8.nextTab(1);
-  chk('^Tab 切回来也还在配置中', a8.inConfig && a8.tab === pending, String(a8.inConfig));
+  // ^Tab（nextTab）**只在当前 agent 的对话里循环**（2026-11-02 用户改的标签栏口径）。
+  // 这个新 agent 只有它一个对话 → 没得切，^Tab 什么都不做，表单自然还留在原地
+  // （"切走不删表单"这条规矩在这里是靠"压根没切"成立的，比硬留一份看不见的表单更省事）。
+  chk('^Tab 在当前 agent 只有一个对话时不切（表单也就没被带走）',
+    a8.nextTab(1) === false && a8.inConfig === true && a8.tab === pending,
+    `${a8.inConfig}/${a8.tab === pending}`);
+  chk('表单还在、填的字也在', a8.form.fields.find((f) => f.key === 'model').value === 'my-model', '');
+  // 同一个 agent 里有两个对话时，^Tab 才真的切 —— 而**另一个 agent 的对话不参与轮换**
+  const aVis = new AgentPanel({});
+  aVis.tabs[0].llm = { ...FAKE_LLM };
+  aVis.configClose();
+  aVis.newTab(true);                                // 同 agent 的第二个对话（配置已在 → 不摊表单）
+  chk('同一个 agent 的第二个对话也进标签栏', aVis.visibleTabs().length === 2, String(aVis.visibleTabs().length));
+  const bVis = aVis.active;
+  chk('^Tab 在同 agent 的两个对话之间切', aVis.nextTab(1) === true && aVis.active !== bVis, `${bVis}->${aVis.active}`);
+  aVis.newTab(true, { freshAgent: true });          // 换个人：新 agent
+  chk('换 agent 之后标签栏只剩它自己的对话', aVis.visibleTabs().length === 1, String(aVis.visibleTabs().length));
+  chk('别的 agent 的对话没被删掉（还在 tabs 里，等着从 NAV 切回去）', aVis.tabs.length === 3,
+    String(aVis.tabs.length));
 
   // 两个对话同时处在"配置中"：各读各的，互不覆盖
   // 内部新建（/del chat 之后补的那种）：同样没配 LLM → 一样停在配置界面

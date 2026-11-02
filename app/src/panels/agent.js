@@ -607,6 +607,29 @@ export class AgentPanel {
   get tab() { return this.tabs[this.active] || null; }
   _nextId() { return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 
+  /**
+   * “当前 agent” = **当前对话所属的那个**（2026-11-02）。
+   * 不另存一个 currentAgent 变量：那样它跟 active 就有了两种真相，切标签 / 删对话之后
+   * 必然对不上（谁先更新？）。以 active 为准，永远一致。
+   */
+  get agent() { return this.tab ? this.tab.agent : ''; }
+
+  /**
+   * 当前 agent 的那些对话在 this.tabs 里的下标（顺序 = 标签顺序）。
+   *
+   * 用户 2026-11-02：「llm 框的标签页改成为当前 agent 的各对话」—— 于是标签栏、顶线色标、
+   * ^Tab 轮换都只覆盖这一份；别的 agent 的对话**仍活在 tabs 里**（还在流式、还占着色号、
+   * 存档照样落盘），只是没有标签可点 —— 要切过去得走 NAV 框的树（见 panels/nav.js）。
+   */
+  visibleTabs() {
+    const cur = this.agent;
+    const out = [];
+    for (let i = 0; i < this.tabs.length; i++) {
+      if (!cur || this.tabs[i].agent === cur) out.push(i);
+    }
+    return out;
+  }
+
   // agent id 与对话 id 分开两套前缀（a / c），看存档文件名就知道是哪种东西
   _nextAgentId() { return 'a' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 
@@ -811,11 +834,12 @@ export class AgentPanel {
     return true;
   }
 
-  /** dir>0 下一个，dir<0 上一个（循环） */
+  /** dir>0 下一个，dir<0 上一个（在**当前 agent 的对话**里循环，见 visibleTabs） */
   nextTab(dir) {
-    const n = this.tabs.length;
-    if (n < 2) return false;
-    this.active = (this.active + (dir > 0 ? 1 : -1) + n) % n;
+    const vis = this.visibleTabs();
+    if (vis.length < 2) return false;
+    const at = Math.max(0, vis.indexOf(this.active));
+    this.active = vis[(at + (dir > 0 ? 1 : -1) + vis.length) % vis.length];
     this.syncFocus();
     this._saveActive();
     return true;
@@ -883,8 +907,12 @@ export class AgentPanel {
       if (!sub) {
         const t0 = this.tab;
         const aid = (t0 && t0.agent) || '-';
-        const n = this.tabs.filter((x) => x.agent === aid).length;
-        this.push('info', 'agent = ' + aid + '   conversations = ' + n + '   usage: /agent new');
+        // conversations = **这个 agent 的**对话数（标签栏能看见几个就是几个，见 visibleTabs）；
+        // agents = 一共几个 agent（多于 1 时，别处的对话只能从 NAV 的树里切过去）
+        const n = this.visibleTabs().length;
+        const agents = new Set(this.tabs.map((x) => x.agent)).size;
+        this.push('info', 'agent = ' + aid + '   conversations = ' + n
+          + '   agents = ' + agents + '   usage: /agent new');
         return true;
       }
       if (sub === 'new') {
@@ -1408,7 +1436,7 @@ export class AgentPanel {
     const m = String(this.llmModel || '').trim();
     if (!m) return t('ui.agent.status.on');     // 配好了但后端没给模型名（不该发生，别显示空白）
     const r = this.rect;
-    const need = this.tabs.length ? this.tabs.length * 2 - 1 : 0;
+    const need = this.visibleTabs().length ? this.visibleTabs().length * 2 - 1 : 0;
     // 标题 'AGENT' 占 5 列 + 与状态字之间至少 1 列 + 右侧边框前后各 1 列
     const avail = r.w - 10 - need - HDR_GAP;
     return clipCols(g, m, Math.max(HDR_MIN, avail));
@@ -1421,7 +1449,9 @@ export class AgentPanel {
    * 跟文字贴在一起会被看成一坨。
    */
   _drawTabMarks(g, C, r) {
-    const T = C.theme, n = this.tabs.length;
+    const T = C.theme;
+    const vis = this.visibleTabs();
+    const n = vis.length;
     this._marksX0 = null;                        // 端到端/回归要看色块到底落在哪一列
     if (n < 1) return;
     const need = n * 2 - 1;                      // 方块之间空一格
@@ -1432,13 +1462,14 @@ export class AgentPanel {
     // 太窄就不画：色块既不能压到标题（至少空一列），也不能碰到状态字
     if (x0 <= titleEnd || x0 + need > hdrStart - 1) return;
     this._marksX0 = x0;
-    for (let i = 0; i < n; i++) {
+    for (let k = 0; k < n; k++) {
+      const i = vis[k];
       const on = i === this.active;
-      const x = x0 + i * 2;
+      const x = x0 + k * 2;
       const col = this.tabs[i].color();
       // 颜色就是身份，别再压暗：只要实心/半块就能分出是不是当前对话
       g.set(x, r.y, on ? '█' : '▄', col, T.panel);
-      if (i < n - 1) g.set(x + 1, r.y, ' ', T.accent, T.panel);
+      if (k < n - 1) g.set(x + 1, r.y, ' ', T.accent, T.panel);
     }
   }
 
@@ -1446,6 +1477,9 @@ export class AgentPanel {
    * 标签栏画在 AGENT 框的顶部边缘线**之上**那一行（框外）。
    * 分栏态下那一行就是横向分割条，所以 main.js 里它必须先于分割条的命中判定。
    * 必须晚于全局 chrome 的分隔线绘制，否则会被那行 '─' 盖掉。
+   *
+   * 只画**当前 agent** 的对话（visibleTabs）：命中区里回的是它在 this.tabs 里的**真下标**，
+   * 这样 selectTab(i) / closeTab(i) 这些照旧按全局下标工作，不用为"当前 agent"再开一套坐标。
    */
   drawTabBar(g, C) {
     const r = this.rect, T = C.theme;
@@ -1455,7 +1489,9 @@ export class AgentPanel {
     this._tabHits = [];
     const maxX = r.x + r.w;                      // 独占：[r.x, r.x+r.w)
     let x = r.x;
-    for (let i = 0; i < this.tabs.length; i++) {
+    const vis = this.visibleTabs();
+    for (let k = 0; k < vis.length; k++) {
+      const i = vis[k];
       const t = this.tabs[i];
       const name = t.title();
       const w = 2 + g.strWidth(name) + 1;        // 色标 + 空格 + 名字 + 空格
@@ -1464,7 +1500,7 @@ export class AgentPanel {
       const col = t.color();
       // 当前对话：淡染一层自己的颜色当底；其余保持底色，只靠色标/字色区分
       const bg = on ? mix(T.panel, col, 0.16) : T.panel;
-      for (let k = 0; k < w; k++) g.set(x + k, y, ' ', T.dim, bg);
+      for (let n = 0; n < w; n++) g.set(x + n, y, ' ', T.dim, bg);
       // 色标实心 = 当前；半块 = 后台。形状 + 颜色两条通道，都不用数数
       g.set(x, y, on ? '█' : '▄', col, bg);
       g.text(x + 2, y, name, on ? col : T.dim, bg, on ? ATTR.BOLD : 0);

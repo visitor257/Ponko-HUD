@@ -1954,14 +1954,17 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/charpacks') return sendJson(res, listCharpacks());
     // 技能清单（只读）：给界面和调试用，agent 那边走的是 system 提示词里那份清单。
-    // ?conv=<对话 id> 决定私有技能能看见哪些。
+    // ?agent=<agent id> 决定私有技能能看见哪些（2026-11-02 起私有技能属于 **agent**）。
+    // ?conv=<对话 id> 是旧参数，留着兼容老调用：迁移后 agentId 就等于 convId，行为不变。
     if (p === '/api/skills') {
-      const cid = String(u.searchParams.get('conv') || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40);
+      const aid = String(u.searchParams.get('agent') || u.searchParams.get('conv') || '')
+        .replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40);
       return sendJson(res, {
         root: skills.SKILLS_DIR,
         publicDir: skills.PUBLIC_DIR,
         privateDir: skills.PRIVATE_DIR,
-        list: skills.listSkills(cid).map((s) => ({
+        agent: aid,
+        list: skills.listSkills(aid).map((s) => ({
           name: s.name, description: s.description, scope: s.scope, path: s.path,
         })),
       });

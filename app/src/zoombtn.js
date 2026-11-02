@@ -16,10 +16,10 @@
 // 两边补白正好 2/2，两个符号都落在正中间 —— 一奇一偶混着用的话（比如 □ + 〼）必然有一个
 // 要偏半格，这是字符网格的数学约束，补白怎么分都救不回来。
 
-export const ZOOM_KEYS = ['globe', 'shell', 'agent', 'char', 'sys'];
+export const ZOOM_KEYS = ['globe', 'shell', 'agent', 'nav', 'char', 'sys'];
 
 export const PANEL_NAME = {
-  globe: 'GLOBE', shell: 'SHELL', agent: 'AGENT', char: 'MOOD', sys: 'SYS',
+  globe: 'GLOBE', shell: 'SHELL', agent: 'AGENT', nav: 'NAV', char: 'MOOD', sys: 'SYS',
 };
 
 /** ⛶ 放大 / 〼 还原 —— 纯符号，不写字（两个都是 2 格宽） */
