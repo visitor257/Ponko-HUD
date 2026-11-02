@@ -32,33 +32,46 @@ English version — [中文版 / Chinese version](README.md)
 
   </details>
 - **Real terminal** — a ConPTY-backed PTY with keys passed straight through (modelled on eDEX-UI / xterm.js); fully interactive programs such as vim / python / htop all run, Chinese IME included; multiple tabs, each an independent session
-- **Agent chat** — connects to an OpenAI-compatible endpoint with streamed output. **Each conversation keeps its own LLM config** (pressing "+" pre-fills the form from the conversation you were looking at when you pressed it — empty if that one has no config; editing one never touches the others); the top-right corner of the panel shows **that conversation's** actual model id (never hardcoded); with nothing attached it reads `local · no LLM`. In the input box **Enter inserts a newline and `Ctrl+Enter` sends** (either Ctrl works; `Alt+Enter` sends too — handy when an IME has claimed the right Ctrl)
+- **Agent chat** — connects to an OpenAI-compatible endpoint with streamed output. There are **two layers**:
+  an **agent** and a **conversation**, and one agent can carry several conversations. Pressing "+" opens another
+  conversation **inside the current agent** (same config, character, personality and private skills — a change of
+  topic, not a change of person); `/agent new` opens a **brand-new agent** whose form starts from scratch, and the
+  two never touch each other. **The LLM config lives on the agent, shared by every conversation under it**;
+  the top-right corner of the panel shows **that conversation's** actual model id (never hardcoded), and with
+  nothing attached it reads `local · no LLM`. In the input box **Enter inserts a newline and `Ctrl+Enter` sends**
+  (either Ctrl works; `Alt+Enter` sends too — handy when an IME has claimed the right Ctrl)
   <details><summary>How conversations are archived and deleted (expand)</summary>
 
   Multiple tabs correspond to multiple conversations, auto-saved to `run/conversations/` and restored verbatim
-  after a restart. Each tab's **colour is saved too** (as an index in its archive), so "the blue one is the
+  after a restart; **each agent's own share** (LLM / character / personality / shell policy) is kept separately
+  in `run/agents/<id>.json`, read and written by every conversation of that agent.
+  Each tab's **colour is saved too** (as an index in its archive), so "the blue one is the
   one I was just asking in" still holds after a restart — the palette is not reshuffled just because the
   restore order is "most recently touched last" (fixed 2026-10-15). **Every tab that is open gets saved** — even one with no LLM configured and nothing said
   in it — so "open two unconfigured tabs, close, reopen" still gives you two: the tab count never quietly
   shrinks (an empty conversation is stored with an empty title, never a UI string). Typing `/del chat` +
   `Ctrl+Enter` in the input box first raises a confirmation line, and
-  only Enter actually closes the current conversation (archive included). A conversation without an LLM gets
-  an inline config dialog; pressing **+** opens it too, **pre-filled from the conversation you were looking
-  at when you pressed it** (blank if that one has no config yet) — edits there affect only that conversation. So switching model or gateway means opening a new
-  conversation, not rewriting a global setting. The form belongs to the **conversation**: tab away half-way
-  through and come back — it is exactly as you left it; only pressing Cancel undoes a brand-new conversation
-  (tab included). A conversation counts as configured only **after you save**.
+  only Enter actually closes the current conversation (archive included). A conversation whose agent has no LLM
+  shows the inline config dialog (pressing **+** included, and after a cold start / restart too — a conversation
+  that never reached an LLM cannot send a word, so a typeable empty box would be pointless). **That form is
+  agent-level**: "+" reuses the current agent, so once the agent is configured the form **does not open** (you can
+  just type); only `/agent new` opens it, **pre-filled from the agent you were looking at when you typed the
+  command** (blank if that agent has no config yet). Edits affect only that agent — **all** of its conversations
+  change at once, and other agents are untouched. The form itself belongs to the **conversation**: tab away
+  half-way through and come back — it is exactly as you left it; only pressing Cancel undoes a brand-new
+  conversation (tab included). A conversation counts as configured only **after you save**.
 
   </details>
 - **Character** — the "character" row of the config form decides which character pack the right-hand panel draws:
-  **auto** or any saved pack (`characters/<id>`). **The character is per conversation too** — switch tabs and the
-  character switches with it. With **auto**, the model you just configured is handed the candidate list and picks
+  **auto** or any saved pack (`characters/<id>`). **The character lives on the agent too** — every conversation of
+  that agent draws the same portrait, and only a different agent is a different person. With **auto**, the model
+  you just configured is handed the candidate list and picks
   one itself (it answers with an id; if it will not, the failure is reported and the default pack is used —
-  **the config is still saved**). The pick is recorded in the conversation (`character: <id> (picked by <model>)`)
+  **the config is still saved**). The pick is recorded on the agent (`character: <id> (picked by <model>)`)
   and sticks across restarts
 - **Personality** — the "personality" row of the same form (natural / tsundere / peppy / sarcastic / gentle),
-  also **per conversation** and saved with it. It is the **persona handed to the model** and shapes how it
-  expresses emotion: "natural" adds nothing extra (the prompt already writes it as a character with moods),
+  also **stored on the agent** and saved with it (not with the conversation). It is the **persona handed to the
+  model** and shapes how it expresses emotion: "natural" adds nothing extra (the prompt already writes it as a character with moods),
   the other four each bring their own tone and reactions
 - **Live geography globe** — positioned from real IP / DNS data, a character-dot sphere projection with an auto marquee
 - **Mood character** — the artwork is either a **dot-matrix image** (`src/*.png`, drawn straight onto the
@@ -70,7 +83,8 @@ English version — [中文版 / Chinese version](README.md)
   **Emotions have memory and momentum**: every request hands the model "how you feel right now" (what you felt
   a moment ago, the line you were thinking, how long it has lasted), so it carries the mood forward instead of
   re-deriving it each turn — upset one turn does not become indifferent the next; it only settles once soothed.
-  **Mood is per conversation** (2026-10-17): a new conversation starts idle and does not inherit the previous
+  **Mood is per conversation** (2026-10-17; unlike the agent-level share above — model, persona and character
+  belong to the agent, **mood belongs to the conversation**): a new conversation starts idle and does not inherit the previous
   one's temper, tabs never bleed into each other — a background conversation's output cannot recolour the
   foreground, and each conversation's model only receives *its own* "how you feel right now".
   **Reopening looks exactly like it did when you quit**: the current mood (colour value, portrait face, the
@@ -409,4 +423,4 @@ again, run `tools/make_test_assets.py`, which draws the five test portraits into
 directory and leaves nothing in the repo.
 
 (Every pack with a `frames/pack.json` under `characters/` is a candidate in the character list, picked
-per conversation.)
+per agent.)

@@ -14,8 +14,13 @@
 // 技能再多，它能干的事还是 shell 能干的事。
 //
 // 目录（都在 run/ 下，该目录不入库，见推送脚本的排除项）：
-//   run/skills/public/<dir>/SKILL.md          所有对话都能用
-//   run/skills/private/<convId>/<dir>/SKILL.md 只有这个对话能用（同名时覆盖公有的）
+//   run/skills/public/<dir>/SKILL.md           所有 agent 都能用
+//   run/skills/private/<agentId>/<dir>/SKILL.md 只有这个 **agent** 能用（同名时覆盖公有的）
+//
+// ⚠ 2026-11-02 用户改了归属：「私有 skill 对应的是各 agent，而不是各对话。
+// 该 agent 里的对话可以共用该 agent 的私有 skill」。
+// 所以这里收的是 **agentId** —— 同一个 agent 下换个话题继续聊，技能照样在
+// （以前按对话 id 收，一按「+」就等于把私有技能丢了）。
 const fs = require('fs');
 const path = require('path');
 
@@ -34,7 +39,8 @@ const PRIVATE_DIR = path.join(SKILLS_DIR, 'private');
 // 允许中文（agent 大概率会写中文名），但**必须以字母/数字/汉字开头** ——
 // 这一条顺带把 `.` 和 `..` 挡在外面，路径穿越就没机会了。
 const DIR_RE = /^[A-Za-z0-9\u4e00-\u9fa5][A-Za-z0-9_.\-\u4e00-\u9fa5]{0,39}$/;
-const CONV_RE = /^[A-Za-z0-9_-]{1,40}$/;          // 与 server.js 的 CONV_ID_RE 一致
+const AGENT_RE = /^[A-Za-z0-9_-]{1,40}$/;          // 与 server.js 的 CONV_ID_RE / agents.AGENT_ID_RE 一致
+const CONV_RE = AGENT_RE;                        // 旧名字留着：验证脚本还在用（同一个正则，同一个意思）
 
 const MAX_SKILLS = 40;          // 再多清单就吃掉太多上下文了
 const MAX_DESC = 140;           // 单条描述上限（清单里一行）
@@ -101,16 +107,16 @@ function scanScope(dir, scope) {
 }
 
 /**
- * 这个对话现在能看见哪些技能。
+ * 这个 **agent** 现在能看见哪些技能（它下面所有对话看到的是同一份）。
  *
- * **不缓存**，每次请求现扫（一次请求只扫一次，见 server.js 的 streamAgent）。
+ * **不缓存**，每次请求现扫（一次请求只扫一次，见 server.js 的 agentLoop）。
  * 缓存会带来"agent 刚写完的 SKILL.md 要等重启才生效"，那正好毁掉自举这件事；
  * 而扫目录的代价是两次 readdir + 每个技能一次读文件，跟一次 LLM 请求比可以忽略。
  */
-function listSkills(convId) {
+function listSkills(agentId) {
   const pub = scanScope(PUBLIC_DIR, 'public');
-  const priv = CONV_RE.test(String(convId || ''))
-    ? scanScope(path.join(PRIVATE_DIR, convId), 'private')
+  const priv = AGENT_RE.test(String(agentId || ''))
+    ? scanScope(path.join(PRIVATE_DIR, agentId), 'private')
     : [];
   // 私有覆盖公有：按**技能名**覆盖（不是目录名）——用户理解的是"同一个技能我有自己那份"
   const map = new Map();
@@ -122,16 +128,16 @@ function listSkills(convId) {
 }
 
 /** 按名字或目录名找一个技能（给"读全文"和测试用） */
-function readSkill(convId, key) {
+function readSkill(agentId, key) {
   const k = oneLine(key);
   if (!k) return null;
-  return listSkills(convId).find((s) => s.name === k || s.dir === k) || null;
+  return listSkills(agentId).find((s) => s.name === k || s.dir === k) || null;
 }
 
 /** 每个技能目录下可选的 guard.json —— shell 命令的拦截规则（见 toolrun.js） */
-function guardRules(convId) {
+function guardRules(agentId) {
   const out = [];
-  for (const s of listSkills(convId)) {
+  for (const s of listSkills(agentId)) {
     let j = null;
     try { j = JSON.parse(stripBom(fs.readFileSync(path.join(s.dirPath, 'guard.json'), 'utf8'))); } catch (e) { continue; }
     for (const r of (j && Array.isArray(j.rules) ? j.rules : [])) {
@@ -160,17 +166,17 @@ function guardRules(convId) {
  * 即使清单是空的也要输出 ①②③ —— 空清单正是"它现在还没有技能"的那一天，
  * 而那一天它必须知道往哪写才能长出自己的第一个技能。
  */
-function skillsBrief(convId) {
-  const list = listSkills(convId);
-  const privRoot = CONV_RE.test(String(convId || '')) ? path.join(PRIVATE_DIR, convId) : PRIVATE_DIR;
+function skillsBrief(agentId) {
+  const list = listSkills(agentId);
+  const privRoot = AGENT_RE.test(String(agentId || '')) ? path.join(PRIVATE_DIR, agentId) : PRIVATE_DIR;
   const L = [];
   L.push('## 技能（skills）');
   L.push('技能就是磁盘上的一份说明书。它**不给你新的权限**——你唯一能调用的是 shell，'
     + '技能里存的是"遇到这类事该怎么做"：步骤、命令、坑。需要时读它，照着做。');
   L.push('');
   L.push('技能库路径（绝对路径，写文件时用这个，别用相对路径）：');
-  L.push('- 公有（所有对话共用）：`' + PUBLIC_DIR + '`');
-  L.push('- 私有（只有本对话可见）：`' + privRoot + '`');
+  L.push('- 公有（所有 agent 共用）：`' + PUBLIC_DIR + '`');
+  L.push('- 私有（只有**你这个 agent** 的全部对话可见，换个话题继续聊也还在）：`' + privRoot + '`');
   L.push('');
   if (list.length) {
     L.push('已有的技能（清单只有一行摘要，要用时先读全文）：');
@@ -206,14 +212,14 @@ function skillsBrief(convId) {
   L.push('...');
   L.push("'@");
   L.push('```');
-  L.push('写私有技能就把上面的路径换成私有的那个。**先判断该放哪**：只跟当前这件事有关的放私有，'
-    + '以后别的对话也用得上的放公有。');
+  L.push('写私有技能就把上面的路径换成私有的那个。**先判断该放哪**：只跟你自己这个 agent 有关的放私有'
+    + '（它下面所有对话都能用），以后谁都用得上的放公有。');
   L.push('不确定能不能跑通，就先跑一遍再把**实际跑通的命令**写进技能——凭印象写的步骤下次一定翻车。');
   return L.join('\n');
 }
 
 module.exports = {
   SKILLS_DIR, PUBLIC_DIR, PRIVATE_DIR,
-  MAX_SKILLS, DIR_RE, CONV_RE,
+  MAX_SKILLS, DIR_RE, AGENT_RE, CONV_RE,
   parseSkill, listSkills, readSkill, guardRules, skillsBrief,
 };

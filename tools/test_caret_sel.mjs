@@ -899,23 +899,27 @@ console.log('\n── 15. 多标签对话 ──');
   a.nextTab(-1);
   chk('nextTab(-1) 回上一个', a.active === 1, a.active);
 
-  // 形象（charpack）是**每个对话一份**的：切标签换人，互相不串
+  // 形象（charpack）**每个 agent 一份**（2026-11-02 改）：同一个 agent 的对话共用，
+  // 换个 agent 才是另一个人。以前是"每个对话一份"，那是旧模型。
   const a6 = new AgentPanel({});
-  a6.newTab();                                    // 先建（那会儿包清单还没到）
   a6.getPacks = () => [{ id: 'ponko', name: 'ponko' }, { id: 'kuro', name: 'kuro' }];
   a6.refreshArtOpts();                            // 包加载完，主装配通知一次 → 候选项补齐
   a6.tabs[0].charpack = 'ponko';
-  a6.tabs[1].charpack = 'auto';
-  chk('形象跟着对话走（各自的 charpack 互不影响）',
-    a6.tabs[0].charpack === 'ponko' && a6.tabs[1].charpack === 'auto',
-    `${a6.tabs[0].charpack}/${a6.tabs[1].charpack}`);
-  a6.selectTab(1);
+  const sib = a6.newTab();                        // 同一个 agent 的第二个对话
+  chk('同一 agent 的对话共用形象', sib.charpack === 'ponko', `${a6.tabs[0].charpack}/${sib.charpack}`);
+  sib.charpack = 'kuro';
+  chk('改一处两边都变（共享记录，不是拷贝）', a6.tabs[0].charpack === 'kuro', a6.tabs[0].charpack);
+  const freshA = a6.newTab(true, { freshAgent: true });   // 另一个 agent
+  chk('不同 agent 的形象互不影响', freshA.charpack === 'auto' && a6.tabs[0].charpack === 'kuro',
+    `${freshA.charpack}/${a6.tabs[0].charpack}`);
+  a6.selectTab(a6.tabs.indexOf(sib));
+  sib.charpack = 'auto'; sib.charpackPicked = '';
   chk('artId()：自动但还没挑 → 空（交给主装配回退默认包）', a6.artId() === '', JSON.stringify(a6.artId()));
-  a6.tabs[1].charpackPicked = 'kuro';
+  sib.charpackPicked = 'kuro';
   chk('artId()：自动 + 已挑 → 用挑出来的那个', a6.artId() === 'kuro', a6.artId());
-  a6.selectTab(0);
-  chk('artId()：直接选了包 → 就用那个（不受兄弟对话"挑了什么"影响）', a6.artId() === 'ponko', a6.artId());
-  const aopts = a6.form.fields.find((x) => x.key === 'charpack').opts.map((o) => o[0]);
+  sib.charpack = 'ponko';
+  chk('artId()：直接选了包 → 就用那个（不再看"挑了什么"）', a6.artId() === 'ponko', a6.artId());
+  const aopts = freshA.cfg.fields.find((x) => x.key === 'charpack').opts.map((o) => o[0]);
   chk('形象候选项 = 自动 + 所有已保存的包',
     JSON.stringify(aopts) === JSON.stringify(['auto', 'ponko', 'kuro']), JSON.stringify(aopts));
 
@@ -997,7 +1001,10 @@ console.log('\n── 15. 多标签对话 ──');
   a8.tabs[0].llm = { ...FAKE_LLM };                 // 先让第一个对话有份配置可以继承
   a8.configClose();                                 // 配好就收起（configSave 验证通过后也是这么收的）
   const n0 = a8.tabs.length;
-  a8.newTab(true);
+  // 2026-11-02：一个 agent 能有多个对话，配置归 agent。
+  // 这里要验的是"配置表单挂在对话身上"（切走再回来还是同一份表单），
+  // 所以必须开一个**全新 agent** —— 同一个 agent 下按「+」不摊表单（配置已在）。
+  a8.newTab(true, { freshAgent: true });
   const pending = a8.tab;
   chk('点「+」建好就弹配置框', a8.inConfig && a8._cfgNew, `${a8.inConfig}/${a8._cfgNew}`);
   chk('表单里预填着"按 + 时所在的那个对话"那份配置',
@@ -1346,9 +1353,9 @@ console.log('\n── 18. 右上角状态 = 连接的模型 id ──');
   chk('对话恢复时把各自的配置带回来（每个对话一份）',
     /if \(c\.llm\)\s*\{\s*t\.llm\s*=\s*\{\s*\.\.\.c\.llm\s*\}/.test(src), '');
   chk('新建对话拿"按 + 那一刻正看着的那个对话"预填表单',
-    /newTab\(fromUser\)[\s\S]{0,900}?configOpen\(\{\s*isNew:\s*true,\s*seed/.test(src), '');
+    /newTab\(fromUser(?:,\s*opts)?\)[\s\S]{0,2400}?configOpen\(\{\s*isNew:\s*true,\s*seed/.test(src), '');
   chk('预填来源只有这一条：_llmOfTab(当前对话)，没有"最近配好的那份"当兜底',
-    /const src = this\.tab;[\s\S]{0,200}?const seed = this\._llmOfTab\(src\)/.test(src) && !/_lastLlm/.test(src), '');
+    /const src = this\.tab;[\s\S]{0,600}?const seed = this\._llmOfTab\(src\)/.test(src) && !/_lastLlm/.test(src), '');
   chk('预填只是**拷一份**（改新对话不该动到老对话那份）',
     /return \(tab && tab\.llm\) \? \{ \.\.\.tab\.llm \} : null;/.test(src), '');
   chk('种子不落进新对话（没保存就不算配好，也就不会被写盘）',
@@ -1367,7 +1374,7 @@ console.log('\n── 18. 右上角状态 = 连接的模型 id ──');
   chk('撤销新建只剩一个入口：configCancel（它对别的对话那份表单没有副作用）',
     /configCancel\(\)[\s\S]{0,500}?this\.closeTab\(this\.tabs\.indexOf\(victim\)\)/.test(src), '');
   chk('没配 LLM 的对话都会停在配置界面：内部新建 / 恢复存档两条路都走同一个入口',
-    /else this\._openFormIfUnset\(t,/.test(src)
+    /this\._openFormIfUnset\(t,\s*seed/.test(src)
     && /this\._openFormIfUnset\(t, prevLlm/.test(src), '');
   chk('取消不再把人困住（旧的"未配置不许取消"已经没了）',
     !/cantCancel/.test(src) && !/form\.cantCancel/.test(src), '');
@@ -1555,11 +1562,23 @@ console.log('\n── 22. 点「+」预填的是"按 + 时所在的那个对话"
     chk('别处明明有一份配好的（c-p1 就是）也照样不抄过来',
       !!(one.llm && one.llm.model === 'model-a'), '');
 
-    // 站在**配好的**那个上点「+」：预填的就是它那份
+    // 站在**配好的**那个上点「+」：2026-11-02 起这是"同一个 agent 换个话题"——
+    // 配置直接就是它那份（共享），**不摊表单**。
     p.configCancel();                       // 撤销刚才那个新建
     p.selectTab(p.tabs.indexOf(one));
-    one.persona = 'gentle';                 // 给"配好的那个"一个非默认性格，看它会不会跟着继承
-    const made2 = p.newTab(true);
+    one.persona = 'gentle';                 // 给"配好的那个"一个非默认性格
+    const same = p.newTab(true);
+    chk('同一 agent 按「+」：不摊表单、配置直接共用',
+      !!same && same.cfg === null && same.agent === one.agent && (same.llm || {}).model === 'model-a',
+      JSON.stringify({ cfg: !!same && !!same.cfg, a: same && same.agent, l: same && (same.llm || {}).model }));
+    chk('共享的不是拷贝：改一处两边都变',
+      !!same && (() => { same.persona = 'gentle'; return one.persona === 'gentle'; })(), '');
+    p.closeTab(p.tabs.indexOf(same));
+    // closeTab 会把落点挪到别的标签上 → 重新站回那个配好的，预填才有得抄
+    p.selectTab(p.tabs.indexOf(one));
+
+    // 开一个**全新 agent** 才回到"预填表单"那条老路（新 agent 需要人确认身份）
+    const made2 = p.newTab(true, { freshAgent: true });
     chk('站在配好的对话上点「+」：地址/Key/模型/协议都预填它那份',
       !!made2 && val(made2.cfg, 'baseUrl') === A.baseUrl && val(made2.cfg, 'apiKey') === A.apiKey
         && val(made2.cfg, 'model') === 'model-a' && val(made2.cfg, 'provider') === 'openai',

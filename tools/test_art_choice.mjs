@@ -256,21 +256,32 @@ console.log('\n── 7. 存档带回来的形象（含脏值收敛）──');
   } finally { globalThis.fetch = realFetch; }
 }
 
-console.log('\n── 8. 新对话预填"按 + 时所在那个对话"的形象（跟配置同一条规矩：保存才生效）──');
+console.log('\n── 8. 形象归 agent：同一 agent 换话题沿用，新 agent 才从"自动"开始 ──');
 {
   const p = new AgentPanel({});
   p.getPacks = () => PK;
   p.refreshArtOpts();
   p.tabs[0].charpack = 'kuro';
   p.tabs[0].charpackPicked = 'ponko';
-  const made = p.newTab(true);                     // 用户点「+」
-  chk('表单里预填的就是按 + 时看着的那个对话的设置',
-    field(p, 'charpack').value === 'kuro', field(p, 'charpack').value);
-  // 跟 LLM 配置同一条规矩：prefill 只灌进表单，**点了保存才算数**。
-  // 所以新对话在保存前 artId() 是空的 → 主装配画默认包（它本来也还没接 LLM）。
-  chk('保存前不算数（新对话仍是 auto）', made.charpack === 'auto', made.charpack);
-  chk('保存前 artId() 为空 → 画默认包', made.artId() === '', JSON.stringify(made.artId()));
-  chk('"模型挑的结果"不继承（新对话的模型会自己再挑）', made.charpackPicked === '', JSON.stringify(made.charpackPicked));
+  // 这个 agent 先"配好"：配置已在，按「+」才不该再摊表单（没配的话摊表单是对的）
+  p.tabs[0].llm = { baseUrl: 'http://x/v1', apiKey: 'k', model: 'm', provider: 'openai' };
+  p.configClose();
+  // 2026-11-02 起「一个 agent 能有多个对话」：形象属于 agent。
+  // 按「+」= 同一个人换个话题 —— 形象当然还是那个，不用再选一遍，也不摊配置表单。
+  const made = p.newTab(true);
+  chk('同一 agent 按「+」：形象直接沿用', made.charpack === 'kuro' && made.charpackPicked === 'ponko',
+    `${made.charpack}/${made.charpackPicked}`);
+  chk('artId() 也直接用那个包', made.artId() === 'kuro', made.artId());
+  chk('配置已在 → 不摊表单', made.cfg === null, String(made.cfg));
+  // 开一个**全新 agent** 才回到"预填表单、保存才生效"那条老路。
+  const fresh = p.newTab(true, { freshAgent: true });
+  chk('新 agent：表单摊开，形象预填着上一份（只灌进表单）',
+    !!fresh.cfg && field(p, 'charpack').value === 'kuro',
+    fresh.cfg ? field(p, 'charpack').value : '(没有表单)');
+  chk('保存前不算数（新 agent 仍是 auto）', fresh.charpack === 'auto', fresh.charpack);
+  chk('保存前 artId() 为空 → 画默认包', fresh.artId() === '', JSON.stringify(fresh.artId()));
+  chk('"模型挑的结果"不继承（新 agent 的模型会自己再挑）',
+    fresh.charpackPicked === '', JSON.stringify(fresh.charpackPicked));
   chk('老对话没被改动', p.tabs[0].charpack === 'kuro' && p.tabs[0].charpackPicked === 'ponko', '');
   chk('当前语言仍是简中（测试没把语言带跑偏）', langOf() === 'zh-cn', langOf());
 }

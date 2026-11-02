@@ -69,6 +69,9 @@ export const askAgent = (text, onEvent, onEnd, history, llm, opts) => stream('/a
   ...(opts && opts.persona ? { persona: opts.persona } : {}),
   ...(opts && opts.mood ? { mood: opts.mood } : {}),
   ...(opts && opts.convId ? { convId: opts.convId } : {}),
+  // agentId = 这个对话属于哪个 agent。**私有技能按 agent 找**（2026-11-02 起），
+  // 没有它后端就只能退回按 convId 找 —— 那等于"同 agent 换个话题就丢了私有技能"。
+  ...(opts && opts.agentId ? { agentId: opts.agentId } : {}),
   ...(opts && opts.shellPolicy ? { shellPolicy: opts.shellPolicy } : {}),
 }, onEvent, onEnd);
 

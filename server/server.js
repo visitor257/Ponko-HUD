@@ -26,6 +26,7 @@ const moodp = require('./moodprotocol');
 const complete = require('./complete');
 const skills = require('./skills');          // 技能库（run/skills 就是注册表，见那个文件抬头）
 const toolrun = require('./toolrun');        // 唯一的工具：shell
+const agents = require('./agents');          // agent 存档（一个 agent 挂多个对话，见那个文件抬头）
 const { PtySession, getSession: getPtySession, dropSession: dropPtySession,
   listSessions: listPtySessions, normSession } = require('./pty');
 
@@ -342,6 +343,14 @@ const UI_MOOD_SOURCES = new Set(['agent', 'auto', 'manual']);
 // eDEX-UI 开机那套刷屏，这里不要"形式上的假日志"：下面每一行都是这一步真的做了什么、
 // 真的花了多久。数字全部来自现场测量（process.version / 端口 / 文件系统 / 真起一次
 // python -V），没有任何写死的内容 —— 没配 LLM 就说没配，扫不到素材包就说扫不到。
+
+// 迁移要**排在自检之前**：自检那份回放里要报 agent 数，顺序反了第一次开机会显示 0 个
+// （其实下一秒就迁出来了）。返回值是这次迁了几个，只有第一次开机非 0。
+const MIGRATED = migrateConvsToAgents();
+// 只在真迁了的时候打一行：开机刷屏那套走 i18n（六种语言），这里不为一次性迁移加 key。
+// 迁移结果要看证据时，就翻 run/agents/ 下有没有新文件 —— 比日志可靠。
+if (MIGRATED) console.log('[agents] 迁移：' + MIGRATED + ' 个对话各自成为独立 agent');
+
 function hostOf(u) { try { return new URL(u).host || String(u); } catch (e) { return String(u || '?'); } }
 const gb = (n) => (n / 1073741824).toFixed(1);
 const mb = (n) => (n / 1048576).toFixed(2) + 'MB';
@@ -923,10 +932,13 @@ function toChunks(body) {
  */
 function agentMoodOpts(body) {
   const persona = moodp.normPersona(body && body.persona);
-  // convId 决定「私有技能」看得见哪些（skills.listSkills 用）。必须按 CONV_ID_RE 洗过 ——
-  // 它会拼进文件路径，带 ../ 就能读到别人的技能库。前端传的是 tab.id，本来就合规，
-  // 这里洗一遍是防直接打 API 的那种用法。
+  // convId / agentId 都会拼进文件路径（技能库），必须洗过 —— 带 ../ 就能读到别人的技能库。
+  // 前端传的是 tab.id / tab.agent，本来就合规，这里洗一遍是防直接打 API 的那种用法。
   const convId = String((body && body.convId) || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40);
+  // agentId 决定「私有技能」看得见哪些（skills.listSkills 用）。2026-11-02 起私有技能
+  // 属于 **agent** 而不是对话：同一个 agent 下的所有对话共用那一份。
+  // 老客户端只带 convId → 退回按 convId 找（迁移后 agentId 就等于 convId，行为不变）。
+  const agentId = String((body && body.agentId) || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40) || convId;
   const raw = (body && body.mood && typeof body.mood === 'object') ? body.mood : null;
   let mood = null;
   if (raw && moodp.STATES[raw.state]) {
@@ -939,7 +951,7 @@ function agentMoodOpts(body) {
       minutes: (isFinite(mins) && mins >= 0) ? mins : 0,
     };
   }
-  return { persona, mood, convId, shellPolicy: toolrun.normPolicy(body && body.shellPolicy) };
+  return { persona, mood, convId, agentId, shellPolicy: toolrun.normPolicy(body && body.shellPolicy) };
 }
 
 async function streamAgent(res, text, history, llm, opts) {
@@ -1407,11 +1419,11 @@ function toAnthropicMessages(list) {
 }
 
 /** 这个对话这一轮该看到的 system 提示词：人设 + 心情 + 技能清单 + 工具说明 */
-function buildAgentSystem(faces, opts, mode, convId) {
+function buildAgentSystem(faces, opts, mode, agentId) {
   return [
     moodp.buildSystemPrompt(faces, opts),
     '',
-    skills.skillsBrief(convId),
+    skills.skillsBrief(agentId),
     '',
     mode === 'text' ? toolrun.TEXT_PROTOCOL_BRIEF : NATIVE_TOOL_BRIEF,
   ].join('\n');
@@ -1433,13 +1445,15 @@ async function agentLoop(res, emit, text, history, cfg, opts) {
   const isAnth = activeProvider(cfg) === 'anthropic';
   const callOnce = isAnth ? callAnthropicOnce : callOpenAIOnce;
   const faces = facesFromPacks();
-  const convId = String((opts && opts.convId) || '');
+  // 技能按 **agent** 找（同一 agent 的对话共用私有技能，2026-11-02 改）。
+  // 老客户端只带 convId → 退回按它找，迁移后两者相等，行为不变。
+  const agentId = String((opts && opts.agentId) || (opts && opts.convId) || '');
   const policy = toolrun.normPolicy(opts && opts.shellPolicy);
-  const ctx = { policy, guardRules: skills.guardRules(convId), convId };
+  const ctx = { policy, guardRules: skills.guardRules(agentId), agentId };
 
   let mode = 'native';
   const messages = [
-    { role: 'system', content: buildAgentSystem(faces, opts, mode, convId) },
+    { role: 'system', content: buildAgentSystem(faces, opts, mode, agentId) },
     ...buildHistory(history, text),
     { role: 'user', content: text },
   ];
@@ -1452,7 +1466,7 @@ async function agentLoop(res, emit, text, history, cfg, opts) {
     // 下一轮请求里就该出现在清单里 —— 自举的全部意义就在这。扫目录 + 读几个 SKILL.md
     // 是毫秒级的，相对一次 LLM 往返可以忽略；换成"进循环前算一次"，
     // 就成了"写完要等用户再说一句话才生效"，那等于没自举。
-    messages[0] = { role: 'system', content: buildAgentSystem(faces, opts, mode, convId) };
+    messages[0] = { role: 'system', content: buildAgentSystem(faces, opts, mode, agentId) };
     const lastChance = step === MAX_TOOL_ROUNDS;
     if (lastChance) {
       messages.push({ role: 'user', content: '（工具调用次数已经用完了。请用现有信息直接给出结论，不要再调用工具。）' });
@@ -1464,7 +1478,7 @@ async function agentLoop(res, emit, text, history, cfg, opts) {
         && (err.status === 400 || err.status === 422) && looksLikeNoTools(err.detail)) {
         degraded = true;
         mode = 'text';
-        messages[0] = { role: 'system', content: buildAgentSystem(faces, opts, mode, convId) };
+        messages[0] = { role: 'system', content: buildAgentSystem(faces, opts, mode, agentId) };
         emit({ t: 'thinking', text: '这个端点不收 tools 参数，改用 ```sh 代码块约定继续。' });
         step--;                      // 这一趟不算一轮：它还没真的跑起来
         continue;
@@ -1600,35 +1614,89 @@ function listConvs() {
       // 能躺在 run/conversations 里的，要么有用户消息、要么配过 LLM、要么是客户端
       // 明确说了要留的标签（keep，见 writeConv）。这里再挑一遍会让"标签数在重启后对不上"：
       // 用户开的那个空标签被写到盘里了，却在列表里被过滤掉 → 一开 HUD 就少一个（2026-10-14 报的）。
-      out.push({ id, title: String(j.title || ''), updatedAt: Number(j.updatedAt) || 0, count: msgs.length });
+      // 顺着 agent 分组用（同一个 agent 的对话是一伙的）。旧存档没有这个字段 → 自己就是一个 agent。
+      out.push({
+        id,
+        agent: CONV_ID_RE.test(String(j.agent || '')) ? String(j.agent) : id,
+        title: String(j.title || ''), updatedAt: Number(j.updatedAt) || 0, count: msgs.length,
+      });
     } catch (e) { /* 坏文件跳过，不要因此让整个列表接口挂掉 */ }
   }
   out.sort((a, b) => a.updatedAt - b.updatedAt);      // 旧 → 新：恢复成标签时顺序稳定
   return out;
 }
 
+/**
+ * 把一个旧对话存档迁成「一个对话 = 一个 agent」（2026-11-02 引入 agent 层时加的）。
+ *
+ * 用户选的就是这条：**每个旧对话各自成为独立 agent**，零丢失、零惊喜 ——
+ * 原来 5 个对话就是 5 个 agent，各自的私有技能原样跟过去。
+ *
+ * 有个便宜可以占：新 agent 的 id **沿用对话 id**，于是 `run/skills/private/<convId>/`
+ * 那份私有技能天然就是新 agent 的，一个文件都不用搬。
+ *
+ * 幂等：只看"这条存档有没有 agent 字段"。跑第二遍什么都不做。
+ */
+function migrateConvsToAgents() {
+  let names = [];
+  try { names = fs.readdirSync(CONV_DIR); } catch (e) { return 0; }
+  let n = 0;
+  for (const fn of names) {
+    if (!fn.endsWith('.json')) continue;
+    const id = fn.slice(0, -5);
+    if (!CONV_ID_RE.test(id)) continue;
+    let j = null;
+    try { j = JSON.parse(fs.readFileSync(convPath(id), 'utf8')); } catch (e) { continue; }
+    if (!j || typeof j !== 'object' || CONV_ID_RE.test(String(j.agent || ''))) continue;
+    // ① 先立 agent：把那几项"属于这个人"的搬进去（脏值照旧洗一遍，别把坏值搬成新格式）
+    agents.writeRaw(id, {
+      llm: llmOf(j.llm),
+      persona: j.persona === undefined ? null : moodp.normPersona(j.persona),
+      charpack: j.charpack === undefined ? null : normArtOf(j.charpack),
+      charpackPicked: j.charpackPicked ? String(j.charpackPicked).trim() : null,
+      shell: j.shell === undefined ? null : toolrun.normPolicy(j.shell),
+    });
+    // ② 再从对话存档里摘掉（留着就有两份真相，早晚对不上）
+    const out = { ...j, agent: id };
+    delete out.llm; delete out.persona; delete out.charpack;
+    delete out.charpackPicked; delete out.shell;
+    try { fs.writeFileSync(convPath(id), JSON.stringify(out)); } catch (e) { continue; }
+    n++;
+  }
+  return n;
+}
+
 function readConv(id) {
   if (!CONV_ID_RE.test(String(id || ''))) return null;
   try {
     const j = JSON.parse(fs.readFileSync(convPath(id), 'utf8'));
+    // 这个对话属于哪个 agent。旧存档 / agent 文件被人手动删了 → 自己就是一个 agent。
+    const aid = CONV_ID_RE.test(String(j.agent || '')) ? String(j.agent) : String(id);
+    const A = agents.readRaw(aid) || {};
+    // 人设 / 形象 / 模型配置 / shell 口径：**agent 那份说了算**；
+    // agent 里没有这项时才退回对话存档里的旧字段（迁移没跑完、或 agent 文件丢了的那种）。
+    // 这个"合并回扁平结构"是故意的：前端每个标签读到的仍是一份完整配置，改法最小。
+    const pick = (k) => (A[k] !== undefined ? A[k] : j[k]);
     return {
-      id, title: String(j.title || ''), updatedAt: Number(j.updatedAt) || 0,
+      id, agent: aid, title: String(j.title || ''), updatedAt: Number(j.updatedAt) || 0,
       msgs: cleanMsgs(j.msgs),
-      llm: llmOf(j.llm),                  // 洗过一遍再给出去：没配 / 存的是坏值 → null
+      llm: llmOf(pick('llm')),            // 洗过一遍再给出去：没配 / 存的是坏值 → null
       // 形象也一样洗一遍：'auto' 或干净的包 id（旧存档没这个字段 → 'auto'）
-      charpack: normArtOf(j.charpack),
-      charpackPicked: ART_ID_RE.test(String(j.charpackPicked || '').trim()) ? String(j.charpackPicked).trim() : '',
+      charpack: normArtOf(pick('charpack')),
+      charpackPicked: ART_ID_RE.test(String(pick('charpackPicked') || '').trim()) ? String(pick('charpackPicked')).trim() : '',
       // 标签色号（色板下标）。存档里没有 / 越界 / 不是整数 → null，由前端自己派一个。
       // 这跟"形象"不一样：形象是**内容**（谁在跟谁说话），色号只是**认标签的记号** ——
       // 但用户就是靠它认"那个蓝的是我刚才问问题那个"，所以也得跨重启记住（2026-10-15 报的）。
+      // 色号留在**对话**这一层：它是标签栏的记号，同一个 agent 的两个对话也该能分开认。
       ci: normCi(j.ci),
       // 性格（见 moodprotocol.js 的 PERSONAS）：白名单外的脏值回落 default
-      persona: moodp.normPersona(j.persona),
-      // 这个对话自己的心情快照（没有 / 脏了 → null，前端就当"从头开始"）
+      persona: moodp.normPersona(pick('persona')),
+      // 心情是**这个对话自己的**（2026-10-17 改的）：同一个 agent 换个话题聊，
+      // 上一段聊恼了不该继承到这通来。所以它留在对话这一层，不进 agent。
       mood: moodp.normMoodSnap(j.mood),
       // shell 策略：allow（全放行，默认）/ guard（按技能里的 guard.json 拦）/ deny（全拦）。
-      // 脏值回落 allow —— 与 toolrun.normPolicy 同一套判定，别在这儿另立一套。
-      shell: toolrun.normPolicy(j.shell),
+      // 它描述的是"这个人被允许干什么"，所以归 agent（2026-11-02 起）。
+      shell: toolrun.normPolicy(pick('shell')),
     };
   } catch (e) { return null; }
 }
@@ -1639,17 +1707,23 @@ function normCi(v) {
   return (Number.isInteger(n) && n >= 0 && n < CONV_MAX) ? n : null;
 }
 
-function writeConv(id, title, msgs, llm, keep, charpack, charpackPicked, ci, persona, mood, shellPolicy) {
+function writeConv(id, title, msgs, llm, keep, charpack, charpackPicked, ci, persona, mood, shellPolicy, agentId) {
   if (!CONV_ID_RE.test(String(id || ''))) return false;
   const clean = cleanMsgs(msgs);
   const cfg = llmOf(llm);
+  // 这个对话属于哪个 agent：客户端给了就用它，没给就**沿用盘上那份**，最后才"自己当 agent"。
+  // 顺序反了的话，没带 agent 的客户端每存一次都会把"同 agent 的第二个对话"掰成一个独立 agent。
+  let prev = null;
+  try { prev = JSON.parse(fs.readFileSync(convPath(id), 'utf8')); } catch (e) { prev = null; }
+  const aid = CONV_ID_RE.test(String(agentId || '')) ? String(agentId)
+    : (prev && CONV_ID_RE.test(String(prev.agent || '')) ? String(prev.agent) : String(id));
   // 没说过话的对话本来不落盘 —— 但有两种必须落：
-  //   ① 配过 LLM 的（llm 有值）：那份地址与 Key 只存在这个对话里，
+  //   ① 配过 LLM 的（cfg 有值）：那份地址与 Key 只存在这个 agent 里，
   //      不写盘的话"新建对话 → 填好配置 → 还没说话就关掉 HUD"等于让人白填一遍。
   //   ② 客户端明确说要留的（keep）：标签栏里**真实存在**的标签。用户新建了一个对话、
   //      或启动时那个还没配好的标签 —— 关掉 HUD 再开，标签数得跟关之前一样，
   //      不能因为"它还没内容"就悄悄少一个（2026-10-14 用户报的）。
-  // 形象（charpack）跟着对话存，但**它自己不构成落盘理由**：一个空对话选了什么形象
+  // 形象（charpack）跟着 agent 存，但**它自己不构成落盘理由**：一个空对话选了什么形象
   // 不值得为它留个档（那种对话本来就会因为 keep 留下来）。
   if (!hasUser(clean) && !cfg && !keep) return false;
   const art = normArtOf(charpack);
@@ -1657,21 +1731,28 @@ function writeConv(id, title, msgs, llm, keep, charpack, charpackPicked, ci, per
   const color = normCi(ci);            // 标签色号：脏值/越界就当没给（前端会自己派一个）
   const per = moodp.normPersona(persona);   // 性格：脏值回落 default（同上，不猜）
   const moodSnap = moodp.normMoodSnap(mood);   // 心情：脏值整条丢掉（同上，不猜）
+  const shell = toolrun.normPolicy(shellPolicy);
+
+  // ① 先写 agent：人设 / 形象 / 模型配置 / shell 口径**属于这个 agent**，它下面所有对话共用一份。
+  // 传 **null = 清掉这一项**（切回默认 / allow 时必须真的清，否则旧的 guard 会赖着不走）；
+  // 传 undefined 才是"这次没提到、保留原样"—— 这个区别在 agents.js 里落实。
+  agents.writeRaw(aid, {
+    llm: cfg,
+    persona: per === 'default' ? null : per,
+    charpack: (art === 'auto' && !picked) ? null : art,
+    charpackPicked: picked || null,
+    shell: shell === 'allow' ? null : shell,
+  });
+
+  // ② 再写对话：只留"这一段聊天"自己的东西
   try {
     fs.mkdirSync(CONV_DIR, { recursive: true });
     const data = {
-      id, title: String(title || '').slice(0, 120), updatedAt: Date.now(), msgs: clean,
-      ...(cfg ? { llm: cfg } : {}),     // 没配就不写这个字段 —— 旧存档的结构原样保持
-      // 同上：'auto' 且没挑到东西就不写，别让每个老对话都被塞两个字段
-      ...((art !== 'auto' || picked) ? { charpack: art, ...(picked ? { charpackPicked: picked } : {}) } : {}),
+      id, agent: aid, title: String(title || '').slice(0, 120), updatedAt: Date.now(), msgs: clean,
       ...(color === null ? {} : { ci: color }),
-      // 同上：'default' 的语义是"没设置"，不写这个字段（别把每个老对话都塞一个 persona）
-      ...(per === 'default' ? {} : { persona: per }),
       // 心情：**每个对话一份**（2026-10-17 起）。洗完再存 —— 前端是唯一的写入方，
       // 但存档文件用户能直接改，脏值不能直接喂回 restore（见 normMoodSnap）。
       ...(moodSnap ? { mood: moodSnap } : {}),
-      // shell 策略：'allow' 是"没设置"（默认全放行），不写这个字段 —— 别把老对话都塞一个
-      ...(toolrun.normPolicy(shellPolicy) === 'allow' ? {} : { shell: toolrun.normPolicy(shellPolicy) }),
     };
     fs.writeFileSync(convPath(id), JSON.stringify(data));
     return true;
@@ -1953,7 +2034,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/conv' && req.method === 'POST') {
       const b = JSON.parse((await readBody(req)) || '{}');
       return sendJson(res, {
-        ok: writeConv(b.id, b.title, b.msgs, b.llm, b.keep, b.charpack, b.charpackPicked, b.ci, b.persona, b.mood, b.shell),
+        ok: writeConv(b.id, b.title, b.msgs, b.llm, b.keep, b.charpack, b.charpackPicked, b.ci, b.persona, b.mood, b.shell, b.agent),
       });
     }
     if (p === '/api/conv/delete' && req.method === 'POST') {

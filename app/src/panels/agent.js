@@ -63,7 +63,7 @@ function clipCols(g, s, max) {
 
 // ── 一个对话：所有状态都在实例上，对话之间互不共享 ──────────────────────
 export class AgentConv {
-  constructor(id, ci, savedMood) {
+  constructor(id, ci, savedMood, A) {
     // 心情是**这个对话自己的**（2026-10-17 改）。以前整个面板共用一个 Mood 实例，
     // 于是：① 按 + 建的新对话会继承上一段对话的火气（用户报的原话）；
     // ② 后台对话还在流式输出时，它的 [[mood:...]] 会直接改**前台**的脸色；
@@ -83,25 +83,21 @@ export class AgentConv {
     this.rect = null;
     this._cancel = null;
     this._title = '';          // 存档里带回来的标题（空 = 按第一条用户消息现取）
-    // 这个对话**自己的** LLM 配置（null = 还没配）。每个对话一份，见文件头那一节：
-    // 换对话就等于换配置，不用改全局，也不会互相覆盖。
-    this.llm = null;
-    // 这个对话的**形象**（角色素材包）：'auto' = 让配好的模型自己挑，否则是包 id。
-    // 也是**每个对话一份** —— 右侧立绘跟着当前对话走，切标签就换人。
-    // charpackWanted 是用户选的那个值，charpackPicked 是"自动"时模型挑出来的结果
-    // （分开存是因为用户想重挑时把 wanted 留着，也能看出模型当时选了什么）。
-    this.charpack = 'auto';
-    this.charpackPicked = '';
-    // 这个对话的**性格**（2026-10-15 加）：也是**每个对话一份**的，跟形象同一层。
-    // 它喂进 system 提示词里那段人设 —— 同一套心情机制，换个性格就是另一个人
-    // （用户："要让 llm 的情绪更拟人……要像具有情感那样"，并选择"配置时设置"）。
-    this.persona = 'default';
-    // shell 策略（2026-10-26 接工具循环时加）：agent 能用 shell 干活，这里管"放多松"。
-    //   allow 全放行（默认，用户要的「权限越高越好」）
-    //   guard 按技能里 guard.json 的规则拦
-    //   deny  全拦（只说话，不动机器）
-    // 跟 persona / charpack 同一层：**每个对话一份**，用 `/shell` 命令切，存进这个对话的存档。
-    this.shellPolicy = 'allow';
+    // ── 下面四项属于 **agent**，不属于这个对话 ──────────────────────────
+    //
+    // 2026-11-02 用户改的模型：「一个 agent 能有多个对话，私有 skill 对应的是各 agent，
+    // 而不是各对话。该 agent 里的对话可以共用该 agent 的私有 skill」。
+    // 所以 llm / charpack / charpackPicked / persona / shellPolicy 不再挂在这个对话身上，
+    // 而是挂到**共享的 agent 记录** A 上（同一个 agent 的所有对话拿到的是同一个对象）：
+    // 换个话题继续聊，人还是那个人、模型还是那个模型。
+    //
+    // 做成访问器（get/set）是为了让原有的 `t.llm` / `t.persona` / `t.charpack` … 几十处
+    // 调用点**一行都不用改**，同时又保证"改一处，同 agent 的所有对话立刻都变"。
+    // 不传 A（单测里直接 new AgentConv）时兜一个只有自己的记录，行为跟以前一模一样。
+    this.A = A || {
+      id: '', llm: null, charpack: 'auto', charpackPicked: '',
+      persona: 'default', shellPolicy: 'allow',
+    };
     // 摊开着的**配置表单**（null = 这个对话没在配）。跟着对话走而不是跟着面板走：
     // 切走只是看不见，填到一半的内容不会丢、也不会被当成别的对话的配置。
     this.cfg = null;
@@ -112,6 +108,20 @@ export class AgentConv {
     this.onDirty = null;       // 内容变了 → 面板排一次落盘
     this.onToken = null;       // 吐字节拍（面板统计 tok/s）
   }
+
+  // ── agent 级字段的读写：全部落到共享记录 A 上（见构造函数那段说明）──
+  // agent 这个 id 也是"私有技能归谁"的依据（run/skills/private/<agentId>/）。
+  get agent() { return this.A.id; }
+  get llm() { return this.A.llm; }
+  set llm(v) { this.A.llm = v; }
+  get charpack() { return this.A.charpack; }
+  set charpack(v) { this.A.charpack = v; }
+  get charpackPicked() { return this.A.charpackPicked; }
+  set charpackPicked(v) { this.A.charpackPicked = v; }
+  get persona() { return this.A.persona; }
+  set persona(v) { this.A.persona = v; }
+  get shellPolicy() { return this.A.shellPolicy; }
+  set shellPolicy(v) { this.A.shellPolicy = v; }
 
   /** 这个对话接没接真 LLM —— 由"自己有没有配置"直接派生，不需要面板往回同步 */
   get llmOk() { return !!this.llm; }
@@ -311,8 +321,9 @@ export class AgentConv {
     // 只能退回演示用的假 agent —— 那正是"明明配过却还在演示"的老毛病。
     }, () => { this.busy = false; if (this.onDirty) this.onDirty(this); }, history, this.llm,
     { persona: this.persona, mood: this._moodBrief(),
-      // convId 决定后端看得见哪些**私有技能**；shellPolicy 决定工具放多松
-      convId: this.id, shellPolicy: this.shellPolicy });
+      // convId 是这段对话（存档/日志用它），agentId 才是"私有技能归谁"的依据（同 agent 共用一份）；
+      // shellPolicy 决定工具放多松 —— 这三样都属于**这个 agent**，不是这一条对话。
+      convId: this.id, agentId: this.agent, shellPolicy: this.shellPolicy });
   }
 
   /**
@@ -455,6 +466,10 @@ export class AgentPanel {
   constructor() {
     this.rect = null;
     this.tabs = [];
+    // agent 记录表：id → 共享对象（人设/形象/LLM 配置/shell 口径）。
+    // **同一个 agent 的多个对话拿的是同一个对象**，所以改一处，那些对话立刻都变。
+    // 只活在内存里，持久化在后端 run/agents/<id>.json（见 server/agents.js）。
+    this.agents = new Map();
     this.active = 0;
     this._focus = true;          // 老行为：agent 起手就带焦点
     this._onToken = null;
@@ -592,6 +607,24 @@ export class AgentPanel {
   get tab() { return this.tabs[this.active] || null; }
   _nextId() { return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 
+  // agent id 与对话 id 分开两套前缀（a / c），看存档文件名就知道是哪种东西
+  _nextAgentId() { return 'a' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+
+  /**
+   * 取（或在内存里立一个）agent 记录。**同一个 id 永远返回同一个对象** ——
+   * 这就是"同一个 agent 的对话共用一份人设/形象/配置/私有技能"的落点。
+   * 不传 id（新开一个 agent）就现生成一个。
+   */
+  _agentRec(id) {
+    const k = String(id || '') || this._nextAgentId();
+    let A = this.agents.get(k);
+    if (!A) {
+      A = { id: k, llm: null, charpack: 'auto', charpackPicked: '', persona: 'default', shellPolicy: 'allow' };
+      this.agents.set(k, A);
+    }
+    return A;
+  }
+
   /**
    * 记住"现在落在哪个对话上"（存进 ui-state，见 server 的 UI_PATH 那段）。
    * 用户 2026-10-17 报的：「切到第一个对话，关掉 HUD 再开，它是第二个对话」——
@@ -684,13 +717,14 @@ export class AgentPanel {
     return this._colorSeq++ % TAB_COLORS.length;
   }
 
-  _mkTab(id, ci, savedMood) {
+  _mkTab(id, ci, savedMood, agentId) {
     // ci 传了就用它（**恢复存档时必须用回来的那个**，见 restore：色号是认标签的记号，
     // 每次重开都重新派一遍的话，用户看到的"蓝的那个 = 我刚才问问题那个"就废了）；
     // 没传（新建对话）才现派一个。
     // savedMood = 存档里这个对话自己的心情快照；**不传就是新对话 → 从待机开始**
     // （用户 2026-10-17："我现在第一个对话是生气，然后我按 +，怎么还是生气"）。
-    const t = new AgentConv(id, (ci === undefined || ci === null) ? this._pickColor() : ci, savedMood);
+    const t = new AgentConv(id, (ci === undefined || ci === null) ? this._pickColor() : ci, savedMood,
+      this._agentRec(agentId));
     t.focus = this._focus;
     t.onDirty = (c) => this._markDirty(c);
     t.onToken = this._onToken;
@@ -726,14 +760,22 @@ export class AgentPanel {
    * 内部新建（构造函数里那个起手对话、/del chat 之后补的那个）走另一条：它没配 LLM，
    * 也就同样是停在配置界面 —— 见 _openFormIfUnset。
    */
-  newTab(fromUser) {
+  newTab(fromUser, opts) {
     if (this.tabs.length >= MAX_CONVS) return null;
     // 预填来源：**按 + 时所在的那个对话**（不是"最后建的那个"、也不是"最近配好的那份"）
     const src = this.tab;                        // 先抓住它：下面 push 之后 this.tab 就成新的了
+    // 2026-11-02 起「一个 agent 能有多个对话」：
+    //   默认（按「+」）= **接着用当前这个 agent**，同一个人换个话题继续聊 ——
+    //     人设/形象/配置/私有技能全都沿用，所以**不摊配置表单**（摊了反而是打断）。
+    //   freshAgent（/agent new）= 开一个全新的 agent，配置从零开始 → 摊表单。
+    const fresh = !!(opts && opts.freshAgent);
+    // 两条路都**沿用"按 + 时看着的那个对话"的设置去预填表单**（跟以前一致）：
+    // 同一个 agent 时表单通常根本不摊开（配置已在），全新 agent 时摊开、里面填着现值 ——
+    // 只是"灌进表单"，不点保存不会落到新 agent 身上。
     const seed = this._llmOfTab(src);
-    const seedArt = src ? src.charpack : 'auto';  // 形象跟 LLM 配置同一个来源
-    const seedPersona = src ? src.persona : 'default';   // 性格同理：按 + 时看着的那个对话是谁，新对话就先是谁
-    const t = this._mkTab(this._nextId());
+    const seedArt = src ? src.charpack : 'auto';
+    const seedPersona = src ? src.persona : 'default';
+    const t = this._mkTab(this._nextId(), undefined, undefined, fresh ? undefined : (src && src.agent));
     this.tabs.push(t);
     this.active = this.tabs.length - 1;
     this.syncFocus();
@@ -742,9 +784,16 @@ export class AgentPanel {
     //   ① 拷一份给表单（不是共用引用）：在新对话里改地址 / Key 不该把上一份也改了
     //   ② 不替他先配好：万一没配就切走，这个空对话要能被干净地撤销掉，
     //      不能因为"继承过一份配置"反而落进存档里（现在 t.llm 一直是空的，写盘会跳过它）
-    if (fromUser) this.configOpen({ isNew: true, seed, seedArt, seedPersona });
-    // 内部新建（冷启动那个、/del chat 之后补的）：没带走任何配置 → 停在配置界面
-    else this._openFormIfUnset(t, seed, seedArt, seedPersona);
+    // 表单只在"这个 agent 还没配置"时摊开：同一个 agent 的新对话已经能说话了，
+    // 全新 agent（/agent new）才需要填地址和 Key。
+    if (fromUser) {
+      // 同一个 agent（配置已在）→ 不摊表单，直接能说话；
+      // 新 agent 或还没配置 → 摊表单（新 agent 一定摊：它是一个"新人"，得让人确认身份）
+      if (fresh || !t.llm) this.configOpen({ isNew: true, seed, seedArt, seedPersona });
+    } else {
+      // 内部新建（冷启动那个、/del chat 之后补的）：没配置就停在配置界面
+      this._openFormIfUnset(t, seed, seedArt, seedPersona);
+    }
     // 用户点「+」建的标签**立刻记一笔账**：他要这个对话，关掉 HUD 再开也得在。
     // 不能等"说了话"才存 —— 没配完就关掉是最常见的情形，那正好是最该留住的时候。
     if (fromUser) { t.keepOpen = true; this._markDirty(t); }
@@ -825,6 +874,28 @@ export class AgentPanel {
       this.configOpen();
       return true;
     }
+    // /agent：看当前是哪个 agent、它挂着几个对话；/agent new 开一个**全新的** agent。
+    // 回显全英文 —— 命令语法与状态值不进字典（同 /shell 的理由，见 i18n 第 3 条）。
+    // 为什么「+」不建新 agent：2026-11-02 的模型是"一个 agent 多个对话"，
+    // 「+」的自然含义是"换个话题接着聊"，不是"换个人"。
+    if (name === 'agent') {
+      const sub = args[0] || '';
+      if (!sub) {
+        const t0 = this.tab;
+        const aid = (t0 && t0.agent) || '-';
+        const n = this.tabs.filter((x) => x.agent === aid).length;
+        this.push('info', 'agent = ' + aid + '   conversations = ' + n + '   usage: /agent new');
+        return true;
+      }
+      if (sub === 'new') {
+        const t1 = this.newTab(true, { freshAgent: true });
+        if (!t1) { this.push('info', 'agent: tab limit reached (' + MAX_CONVS + ')'); return true; }
+        this.push('info', 'agent = ' + t1.agent + '   (new)');
+        return true;
+      }
+      this.push('info', 'usage: /agent | /agent new');
+      return true;
+    }
     // /shell：agent 能调用 shell 之后，"放多松"必须有个当场能改的开关。
     // 输出**故意全用英文**：它是命令回显（`shell = allow` 跟 `a = 1` 一样是状态，不是文案），
     // 按 i18n 第 3 条的约定这类东西不进字典 —— 翻成五种语言反而更难认
@@ -833,7 +904,8 @@ export class AgentPanel {
       const v = args[0] || '';
       const usage = 'usage: /shell allow | guard | deny';
       if (!v) {
-        // 策略挂在**对话**上（tab），不挂在面板上 —— 面板是容器，八个对话各有各的策略
+        // 策略挂在**agent** 上（2026-11-02 起）：它描述"这个人被允许干什么"，
+        // 同一个 agent 换个话题继续聊，口径不该跟着变。面板只是容器。
         const cur = (this.tab && this.tab.shellPolicy) || 'allow';
         this.push('info', 'shell = ' + cur + '   ' + usage);
         return true;
@@ -844,8 +916,8 @@ export class AgentPanel {
       }
       const t0 = this.tab;
       if (t0) {
-        t0.shellPolicy = v;
-        this._markDirty(t0);                 // 立刻落盘：跟性格/形象一样，属于这个对话
+        t0.shellPolicy = v;                  // 写进共享的 agent 记录 → 同 agent 的对话一起变
+        this._markDirty(t0);                 // 立刻落盘（存的是 agent 文件里那一项）
       }
       this.push('info', 'shell = ' + v);
       return true;
@@ -900,6 +972,9 @@ export class AgentPanel {
         // 免得关掉 HUD 再开标签数对不上（见 AgentConv.keepOpen）。
         // charpack = 这个对话的形象（'auto' = 让模型挑），charpackPicked = 模型挑出来的那个包。
         saveConv({
+          // agent = 这个对话属于哪个 agent。后端按它把"属于人"的那几项写进
+          // run/agents/<agentId>.json，对话文件里只留消息/心情/色号（见 server 的 writeConv）。
+          agent: conv.agent,
           id: conv.id, title: conv.saveTitle(), msgs, llm: conv.llm || null,
           keep: !!conv.keepOpen, charpack: normArt(conv.charpack), charpackPicked: normArtPick(conv.charpackPicked),
           // persona = 这个对话的性格（见 AgentConv.persona）；脏值收敛成 default，不猜
@@ -954,7 +1029,9 @@ export class AgentPanel {
       // 或者跟前面某个对话撞了 → 现派一个（_pickColor 会跳过已经用掉的）。
       const want = normCi(c.ci);
       const ci = (want !== null && !this.tabs.some((x) => x.ci === want)) ? want : this._pickColor();
-      const t = this._mkTab(c.id, ci, c.mood);
+      // agent：存档里有就用它，老存档（迁移前）没有 → 自己就是一个 agent（id 同对话 id）。
+      // 同一 agent 的第二个对话会在这里**拿到同一个共享记录**，配置只灌一次。
+      const t = this._mkTab(c.id, ci, c.mood, c.agent || c.id);
       t._title = c.title || '';
       t.keepOpen = true;                       // 它在存档里 —— 以后再落盘也带着 keep，不会被判成"空对话"丢掉
       // 每个对话带回自己那份配置
